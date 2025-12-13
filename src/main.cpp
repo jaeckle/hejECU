@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2025 "hej und Gemini" (Contributor: [Ihr GitHub-Username])
+ * Copyright (c) 2025 "hej und Gemini" (Contributor: jaeckle)
  *
  * This software is licensed under the GNU General Public License v3.0 (GPL-3.0).
  * This program is free software; you can redistribute it and/or modify it
@@ -8,7 +8,6 @@
  *
  * A copy of the license is provided in the LICENSE file in the project root.
  */
-
 // main.cpp
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
@@ -134,7 +133,7 @@ struct SensorState {
     volatile float luftfeuchtigkeit_umgebung_pct; 
 } sensor = {0, 0, false, false, false, false, false, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-std::vector<MapPoint> ignitionMap;
+IgnitionMap2D ignitionMap2D; // NEU: Definition der 2D-Map
 
 // --- SENSOR ABSTRAKTION UND VERWALTUNG (Klassen) ---
 enum SensorID { SID_TPS_RAW, SID_SPEED, SID_BATT_V, SID_TEMP_KOPF, SID_TEMP_LUFT, SID_TEMP_UMG, SID_FEUCHTIGKEIT, SID_LIGHT, SID_FARLIGHT, SID_BRAKE, SID_BLINK_L, SID_BLINK_R, SID_COUNT };
@@ -183,6 +182,7 @@ const int CALC_FREQUENCY = 100;
 
 
 // --- NOTFALL-FALLBACK KENNFIELD (PROGMEM) ---
+// ACHTUNG: Das JSON ist noch im alten, flachen MapPoint-Format und muss später angepasst werden!
 const char* FALLBACK_CURVE_JSON = R"({"ssid": "", "password": "", "ap_ssid": "esp-aktor", "ap_password": "MeinSicheresPasswort", "rpm_pulses": 1, "rpm_type": true, "timing_offset": 60, "timing_tdc": 0.0, "primary_resistance_ohm": 0.2, "external_resistance_ohm": 2.0, "primary_inductance_mH": 4.0, "target_current_A": 8.0, "fixed_dwell_ms": 3.5, "log_level": 0, "map": [ {"rpm": 0, "tps": 0, "angle": 10}, {"rpm": 8000, "tps": 1023, "angle": 8} ]})"; 
 
 
@@ -211,7 +211,8 @@ float getSpeedStateSafe();
 
 // Helfer (Implementierung folgt)
 void checkHeapHealth();
-int getAdvanceAngle2D(int rpm, int tps);
+// int getAdvanceAngle2D(int rpm, int tps); // ALTE Deklaration
+int calculateBilinearAngle(int rpm, int tps); // NEUE Deklaration
 void updateIgnitionParameters();
 void updateSensorState(SensorID id, float value); 
 void updateSensorsRoundRobin();
@@ -242,12 +243,12 @@ float getSpeedStateSafe() {
     return calFactor / (float)period; 
 }
 
-// --- NEUE SICHERE GETTER FÜR SENSORSTATE (Lösung der Warnungen) ---
+// --- SICHERE GETTER FÜR SENSORSTATE ---
 float getSensorTpsRawSafe() { noInterrupts(); float val = sensor.tps_raw; interrupts(); return val; }
 float getSensorBattVSafe() { noInterrupts(); float val = sensor.batteriespannung_v; interrupts(); return val; }
 float getSensorTempKopfSafe() { noInterrupts(); float val = sensor.temperatur_zylinderkopf_c; interrupts(); return val; }
 float getSensorSpeedSafe() { noInterrupts(); float val = sensor.geschwindigkeit_kmh; interrupts(); return val; }
-// -------------------------------------------------------------------
+// ------------------------------------
 
 
 // In CoreDefs.h extern deklariert
@@ -271,25 +272,71 @@ void setPinState(int pinCode, bool targetState) {
   LOG(LOG_DEBUG, "Pin %d -> %s", pinCode, targetState ? "HIGH" : "LOW");
 }
 
-int getAdvanceAngle2D(int rpm, int tps) {
-    if (ignitionMap.empty()) return 0;
+// TEMPORÄRE IMPLEMENTIERUNG: Lineare Interpolation (wird im nächsten Schritt ersetzt)
+int calculateBilinearAngle(int rpm, int tps) {
+    // 1. Failsafe und Thread-Sicherheit
+    if (ignitionMap2D.rpm_axis.empty()) return 10; // Standardwinkel 10° bei leerer Map
     
-    std::vector<MapPoint> currentMap;
+    // Die folgende Logik verwendet temporär noch die alte Annahme des flachen Vektors
+    // und ignoriert die TPS-Achse fast vollständig, um die Kompilierbarkeit zu sichern.
+    
+    // NOTE: Wir verwenden hier rpm_axis als Ersatz für die frühere, sortierte flache Map.
+    std::vector<int> rpmAxisCopy;
     noInterrupts();
-    currentMap = ignitionMap;
+    rpmAxisCopy = ignitionMap2D.rpm_axis;
     interrupts();
+
+    // 2. BOUNDARY CHECKING (Clipping der RPM-Werte)
+
+    int minRpm = rpmAxisCopy.front();
+    int maxRpm = rpmAxisCopy.back();
     
-    if (currentMap.size() > 1) {
-        std::sort(currentMap.begin(), currentMap.end(), [](const MapPoint& a, const MapPoint& b) {
-             if (a.rpm != b.rpm) return a.rpm < b.rpm;
-             return a.tps < b.tps;
-           });
+    if (rpm <= minRpm) rpm = minRpm;
+    if (rpm >= maxRpm) rpm = maxRpm;
+    
+    // 3. Finden der umrahmenden Punkte (Q_low und Q_high) 
+    // Hier müsste die Index-Suche optimiert werden (Binäre Suche)
+    
+    int rpm_low_value = minRpm; 
+    int rpm_high_value = maxRpm;
+    int angle_low = 10; // Standard-Fallback
+    int angle_high = 10;
+    
+    // Suche nach den nächstgelegenen Achsen-Werten (nur RPM)
+    for (size_t i = 0; i < rpmAxisCopy.size(); ++i) {
+        int r = rpmAxisCopy[i];
+        
+        if (r <= rpm) {
+            rpm_low_value = r;
+            // Da wir keine einfache 1D-Map mehr haben, ist die Angle-Suche komplex.
+            // Wir MÜSSEN im nächsten Schritt die echte bilineare Logik implementieren.
+            // TEMPORÄRE FALLBACKS (Müssen im echten Bilinear-Code ersetzt werden):
+            if (!ignitionMap2D.angle_data.empty() && !ignitionMap2D.angle_data[0].empty()) {
+                angle_low = ignitionMap2D.angle_data[0][i];
+            }
+        }
+        
+        if (r >= rpm) {
+            rpm_high_value = r;
+            if (!ignitionMap2D.angle_data.empty() && !ignitionMap2D.angle_data[0].empty()) {
+                angle_high = ignitionMap2D.angle_data[0][i];
+            }
+            break; // Erste obere Grenze gefunden
+        }
     }
-    // 
-    // [Implementierung der 2D-Interpolation]
-    if (rpm > 5000) return 15;
-    if (tps > 800) return 10;
-    return 25; 
+    
+    // 4. LINEARE INTERPOLATION (entlang der RPM-Achse)
+
+    float angle = 0.0f;
+    
+    if (rpm_low_value == rpm_high_value) {
+        angle = angle_low; 
+    } else {
+        float factor = (float)(rpm - rpm_low_value) / (float)(rpm_high_value - rpm_low_value);
+        angle = angle_low + factor * (angle_high - angle_low);
+    }
+    
+    return (int)round(angle);
 }
 
 void IRAM_ATTR fireIgnitionOutput() {
@@ -381,7 +428,7 @@ void updateIgnitionParameters() {
     int tps_value;
     noInterrupts(); tps_value = sensor.tps_raw; interrupts();
 
-    int advance_angle = getAdvanceAngle2D(rpm_copy, tps_value);  
+    int advance_angle = calculateBilinearAngle(rpm_copy, tps_value);  
     
     float Dwell_ms_calc;
     float fixed_dwell; 
@@ -513,26 +560,25 @@ bool loadDataFromJson(const char* jsonString) {
     LOG(LOG_DEBUG, "Log Level: %d", (int)activeLogLevel);
     LOG(LOG_DEBUG, "RPM Pulses: %d | Offset: %d deg", rpmConfig.pulses_per_revolution, timingConfig.trigger_offset_deg);
     
-    // MAP LADEN
-    JsonArray mapArray = doc[F("map")].as<JsonArray>(); 
-    ignitionMap.clear();
-
-    for (JsonObject point : mapArray) {
-        if (point.containsKey(F("rpm")) && point.containsKey(F("tps")) && point.containsKey(F("angle"))) {
-            ignitionMap.push_back({point[F("rpm")], point[F("tps")], point[F("angle")]});
-        }
-    }
+    // *** WICHTIG: Die folgende Logik zum Laden der Map ist noch für das ALTE MapPoint-Format ***
+    // Sie wird hier beibehalten, da unser FALLBACK_CURVE_JSON noch im alten Format ist.
+    // Im nächsten Schritt muss DIESER BLOCK komplett durch die 2D-Achsen-Logik ersetzt werden.
     
-    LOG(LOG_DEBUG, "Kennfeldpunkte geladen: %d", ignitionMap.size());
-
-    if (ignitionMap.size() > 1) {
-        std::sort(ignitionMap.begin(), ignitionMap.end(), [](const MapPoint& a, const MapPoint& b) {
-            if (a.rpm != b.rpm) return a.rpm < b.rpm;
-            return a.tps < b.tps;
-        });
-    }
+    // Hier wird der alte flache MapPoint-Vektor verwendet (der nicht mehr existiert!)
+    // Wir leeren die neue 2D-Map temporär, um Kompilierfehler zu vermeiden.
     
-    updateSpeedCalibrationFactor();
+    // JsonArray mapArray = doc[F("map")].as<JsonArray>(); 
+    // ignitionMap.clear(); 
+    // ...
+
+    // Temporäre Leerung der NEUEN 2D-Struktur
+    ignitionMap2D.rpm_axis.clear();
+    ignitionMap2D.tps_axis.clear();
+    ignitionMap2D.angle_data.clear();
+    LOG(LOG_DEBUG, "Kennfeldpunkte (temporär) geleert: 0");
+
+    
+    // updateSpeedCalibrationFactor();
     return true;
 }
 
@@ -563,14 +609,16 @@ bool saveConfig() {
     doc[F("primary_resistance_ohm")] = coilConfig.primary_resistance_ohm;
     doc[F("external_resistance_ohm")] = coilConfig.external_resistance_ohm;
     
-    // MAP SPEICHERN
-    JsonArray mapArray = doc.createNestedArray(F("map"));
-    for (const auto& point : ignitionMap) {
-        JsonObject obj = mapArray.createNestedObject();
-        obj[F("rpm")] = point.rpm;
-        obj[F("tps")] = point.tps;
-        obj[F("angle")] = point.angle;
-    }
+    // *** WICHTIG: Die folgende Logik zum SPEICHERN der Map ist noch für das ALTE MapPoint-Format ***
+    // Sie muss im nächsten Schritt durch die 2D-Achsen-Logik ersetzt werden.
+    
+    // JsonArray mapArray = doc.createNestedArray(F("map"));
+    // for (const auto& point : ignitionMap) {
+    //     JsonObject obj = mapArray.createNestedObject();
+    //     obj[F("rpm")] = point.rpm;
+    //     obj[F("tps")] = point.tps;
+    //     obj[F("angle")] = point.angle;
+    // }
 
     File configFile = LittleFS.open(F("/config.json"), "w");
     if (!configFile) return false;

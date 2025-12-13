@@ -1,5 +1,16 @@
+// WebServer.cpp
+
+#include "WebServer.h" 
+#include <LittleFS.h>
+#include <ArduinoOTA.h> 
+#include <ESP.h>
+#include <ESP8266mDNS.h>    
+#include <ArduinoJson.h>
+#include <algorithm> 
+
+// --- LIZENZ HINWEIS ---
 /*
- * Copyright (c) 2025 "hej und Gemini" (Contributor: [Ihr GitHub-Username])
+ * Copyright (c) 2025 "hej und Gemini" (Contributor: jaeckle)
  *
  * This software is licensed under the GNU General Public License v3.0 (GPL-3.0).
  * This program is free software; you can redistribute it and/or modify it
@@ -9,24 +20,21 @@
  * A copy of the license is provided in the LICENSE file in the project root.
  */
 
- // WebServer.cpp
-#include "WebServer.h" 
-#include <LittleFS.h>
-#include <ArduinoOTA.h> 
-#include <ESP.h>
-#include <ESP8266mDNS.h>    
-#include <ArduinoJson.h>
-#include <algorithm> 
+// LOG MACRO HIER DEFINIERT (Damit WebServer.cpp LOG verwenden kann)
+#define LOG(level, format, ...) app_log(level, __FILE__, __LINE__, __LINE__, format, ##__VA_ARGS__) 
 
 // Externe Deklarationen (aus CoreDefs.h)
 extern ESP8266WebServer server;
 extern volatile LogLevel activeLogLevel;
-extern String apPassword;
+extern String wifiSsid; // NEU
+extern String wifiPassword; // NEU
+extern String apSsid; // NEU
+extern String apPassword; // NEU
 extern bool startApMode;
 extern const char *LOG_FILENAME;
 extern std::vector<String> startupLogBuffer;
 extern bool serverStarted;
-extern volatile unsigned long max_loop_duration_us; 
+extern volatile unsigned long max_loop_duration_us;
 extern volatile bool is_critical_latency_active;
 extern volatile unsigned long last_critical_max_duration_us;
 extern volatile unsigned long last_critical_timestamp_ms;
@@ -35,14 +43,16 @@ extern volatile unsigned long last_critical_timestamp_ms;
 extern struct RpmConfig rpmConfig;
 extern struct IgnitionTimingConfig timingConfig;
 extern struct IgnitionCoilConfig coilConfig;
-extern std::vector<MapPoint> ignitionMap;
+extern IgnitionMap2D ignitionMap2D; // NEU: 2D MAP STRUKTUR
+
+// ALTE MAP DEKLARATION ENTFERNT: extern std::vector<MapPoint> ignitionMap;
 
 // Externe Funktionen
 extern bool saveConfig();
 extern bool loadDataFromJson(const char* jsonString);
 extern const char* FALLBACK_CURVE_JSON;
 extern int getIgnitionRpmSafe();
-extern int getAdvanceAngle2D(int rpm, int tps);
+extern int calculateBilinearAngle(int rpm, int tps); // UMBENANNT
 extern int pinNameToCode(String pinName);
 extern void setPinState(int pinCode, bool targetState);
 extern float getSensorTpsRawSafe();
@@ -138,6 +148,7 @@ void handleRoot() {
     
     String content = F("<html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1'></head><body>");
     
+    // Die Versionsnummer wurde in main.cpp auf 0.0.001 gesetzt
     content += F("<h1>🏍️ ECU Dashboard v1.2 (Version 0.0.001)</h1>");
     content += F("<h2>System Status</h2>");
     
@@ -320,7 +331,7 @@ void handleSetLogLevel() {
 }
 
 
-// --- Fehlende Konfigurationshandler (Implementierung) ---
+// --- Konfigurationshandler (WLAN) ---
 
 void handleConfig() {
     if (!isAuthorized()) return server.requestAuthentication();
@@ -382,152 +393,44 @@ void handleSaveConfig() {
     }
 }
 
+// --- Konfigurationshandler (Zündkurve - MUSS NOCH AUF 2D ANGEPASST WERDEN!) ---
 void handleCurveConfig() {
     if (!isAuthorized()) return server.requestAuthentication();
 
     String html = F("<html><head><meta charset='UTF-8'><title>Zündkurven-Konfiguration</title></head><body>");
     html += F("<h1>📈 Zündkurven-Konfiguration</h1>");
-    html += F("<p>Hier können Sie die Zündkennfeld-Punkte bearbeiten. Änderungen werden erst nach 'Speichern & Neustart' permanent.</p>");
-    html += F("<form method='post' action='/savecurve'>");
-
-    // --- TABELLE START ---
-    html += F("<table border='1' cellpadding='5'>");
-    html += F("<tr><th>#</th><th>Drehzahl (RPM)</th><th>TPS (0-1023)</th><th>Winkel (° v. OT)</th><th>Aktion</th></tr>");
-
-    std::vector<MapPoint> currentMap;
+    html += F("<p>Die Anzeige/Bearbeitung ist momentan nur für das alte, flache MapPoint-Format implementiert. Diese Seite muss für die 2D-Achsenstruktur neu gestaltet werden.</p>");
+    
+    html += F("<h2>Aktuelle 2D-Achsen-Größe:</h2>");
+    
+    size_t rpm_size = 0;
+    size_t tps_size = 0;
+    size_t data_rows = 0;
+    
     noInterrupts();
-    currentMap = ignitionMap;
+    rpm_size = ignitionMap2D.rpm_axis.size();
+    tps_size = ignitionMap2D.tps_axis.size();
+    if (!ignitionMap2D.angle_data.empty()) {
+        data_rows = ignitionMap2D.angle_data.size();
+    }
     interrupts();
     
-    // Sortierung der Map-Punkte
-    if (currentMap.size() > 1) {
-        std::sort(currentMap.begin(), currentMap.end(), [](const MapPoint& a, const MapPoint& b) {
-            if (a.rpm != b.rpm) return a.rpm < b.rpm;
-            return a.tps < b.tps;
-        });
-    }
-
-    for (size_t i = 0; i < currentMap.size(); ++i) {
-        String idx = String(i);
-        html += F("<tr><td>"); html += idx; html += F("</td>");
-        html += F("<td><input type='number' name='rpm_"); html += idx;
-        html += F("' value='"); html += String(currentMap[i].rpm); html += F("' min='0' required></td>");
-        html += F("<td><input type='number' name='tps_"); html += idx;
-        html += F("' value='"); html += String(currentMap[i].tps); html += F("' min='0' max='1023' required></td>");
-        html += F("<td><input type='number' name='angle_");
-        html += idx; html += F("' value='"); html += String(currentMap[i].angle); html += F("' min='-20' max='30' required></td>");
-        html += F("<td><button type='submit' name='delete_idx' value='"); html += idx;
-        html += F("'>Löschen</button></td></tr>");
-    }
-
-    String new_idx = String(currentMap.size());
-    html += F("<tr><td>"); html += new_idx; html += F(" (Neu)</td>");
-    html += F("<td><input type='number' name='rpm_"); html += new_idx;
-    html += F("' value='' min='0' placeholder='RPM' ></td>");
-    html += F("<td><input type='number' name='tps_"); html += new_idx;
-    html += F("' value='' min='0' max='1023' placeholder='TPS' ></td>");
-    html += F("<td><input type='number' name='angle_"); html += new_idx;
-    html += F("' value='' min='-20' max='30' placeholder='Winkel' ></td>");
-    html += F("<td></td></tr>"); 
+    html += F("<p>RPM Achse Punkte (X): "); html += String(rpm_size); html += F("</p>");
+    html += F("<p>TPS Achse Punkte (Y): "); html += String(tps_size); html += F("</p>");
+    html += F("<p>Daten Zeilen (Sollte TPS-Größe entsprechen): "); html += String(data_rows); html += F("</p>");
     
-    html += F("</table>");
-    html += F("<br><h2>Aktionen</h2>");
-    
-    html += F("<button type='submit' name='action' value='apply_only' style='background: #ffcc00; margin-right: 10px;'>🧪 Im RAM Anwenden (Test)</button>");
-    html += F("<button type='submit' name='action' value='save_all'>✅ Speichern auf Flash & Neustart</button>");
-    
-    html += F("</form>"); 
-
-    html += F("<h2>Werkseinstellungen</h2>");
-    html += F("<p>Stellt die Zündkurve auf den unveränderlichen Firmware-Standard zurück und startet neu.</p>");
-    html += F("<form method='post' action='/restorecurve'>");
-    html += F("<button type='submit'>⚠️ Standard-Kurve Wiederherstellen</button>");
-    html += F("</form>");
+    html += F("<p style='color: orange;'>⚠️ Die vollständige Bearbeitung der 2D-Tabelle ist in Arbeit!</p>");
 
     html += F("<p><a href='/'>Zurück zum Dashboard</a></p></body></html>");
     
     server.send(200, "text/html; charset=utf-8", html);
 }
 
+// Handler für die alte Map-Struktur (wird deaktiviert, bis 2D-Logik implementiert ist)
 void handleSaveCurve() {
     if (!isAuthorized()) return server.requestAuthentication();
-
-    String action = server.arg(F("action"));
-    
-    String delete_idx_str = server.arg(F("delete_idx"));
-    if (delete_idx_str.length() > 0) {
-        int delete_index = delete_idx_str.toInt();
-        
-        noInterrupts();
-        if (delete_index >= 0 && (size_t)delete_index < ignitionMap.size()) {
-            ignitionMap.erase(ignitionMap.begin() + delete_index);
-            LOG(LOG_INFO, "Kennfeldpunkt %d gelöscht.", delete_index);
-        }
-        interrupts();
-        
-        server.sendHeader(F("Location"), F("/curve"));
-        server.send(303);
-        return;
-    }
-
-    std::vector<MapPoint> newMap;
-    
-    for (int i = 0; i < server.args(); i++) {
-        String argName = server.argName(i);
-        
-        if (argName.startsWith(F("rpm_"))) {
-            int index = argName.substring(4).toInt();
-            String rpmStr = server.arg(argName);
-            String tpsStr = server.arg(F("tps_") + String(index));
-            String angleStr = server.arg(F("angle_") + String(index));
-            
-            if (rpmStr.isEmpty() || tpsStr.isEmpty() || angleStr.isEmpty()) {
-                if (action != F("add_new") || (size_t)index != ignitionMap.size()) {
-                    continue;
-                }
-            }
-            
-            if (rpmStr.isEmpty() || tpsStr.isEmpty() || angleStr.isEmpty()) {
-                if (action == F("add_new") && (size_t)index == ignitionMap.size()) {
-                     server.send(400, F("text/plain"), F("Fehler: Neuer Punkt muss RPM, TPS und Winkel haben."));
-                     return;
-                }
-            }
-
-            int rpm = rpmStr.toInt();
-            int tps = tpsStr.toInt();
-            int angle = angleStr.toInt();
-
-            if (rpm < 0 || rpm > 15000 || tps < 0 || tps > 1023 || angle < -20 || angle > 30) {
-                LOG(LOG_ERROR, "Ungültige Kennfeldwerte (%d RPM, %d TPS, %d Angle).", rpm, tps, angle);
-                server.send(400, F("text/plain"), F("Fehler: Ungültige Werte für RPM/TPS/Winkel."));
-                return;
-            }
-
-            newMap.push_back({rpm, tps, angle});
-        }
-    }
-
-    // Kurve übernehmen (in den RAM)
-    noInterrupts();
-    ignitionMap = newMap;
-    interrupts();
-    
-    if (action == F("save_all")) {
-        LOG(LOG_INFO, "Zündkennfeld in RAM übernommen. Speichere und starte neu.");
-        if (saveConfig()) {
-            server.send(200, F("text/plain"), F("Kennfeld gespeichert. Neustart..."));
-            delay(1000);
-            ESP.restart(); 
-            return;
-        } else {
-            server.send(500, F("text/plain"), F("Fehler beim Speichern der Konfiguration."));
-            return;
-        }
-    } 
-    
-    String responseHtml = F("<html><head><meta http-equiv='refresh' content='2;url=/curve'></head><body><h1>Erfolg!</h1><p>Konfiguration im RAM angewendet. Seite wird in 2 Sekunden neu geladen.</p><p><a href='/curve'>Manuell fortfahren</a></p></body></html>");
-    server.send(200, "text/html; charset=utf-8", responseHtml);
+    LOG(LOG_ERROR, "handleSaveCurve ist für das 2D-Format noch nicht implementiert.");
+    server.send(501, F("text/plain"), F("Speichern der Kurve ist für das neue 2D-Format in Arbeit."));
 }
 
 void handleRestoreCurve() {
@@ -547,6 +450,7 @@ void handleRestoreCurve() {
     server.send(500, F("text/plain"), F("Fehler: Konnte Standard-Kennfeld nicht speichern."));
 }
 
+// --- Konfigurationshandler (RPM/Timing/Spule) ---
 void handleRpmConfig() {
     if (!isAuthorized()) return server.requestAuthentication();
 
@@ -558,14 +462,19 @@ void handleRpmConfig() {
     html += F("<p><b>Pin:</b> D1 (fest verdrahtet)</p>");
     html += F("Impulse pro Umdrehung: <input type='number' name='pulses' min='1' max='20' value='");
     html += String(rpmConfig.pulses_per_revolution); html += F("' required><br>");
-    html += F("Sensor Typ: <select name='is_digital'><option value='1' "); html += rpmConfig.is_digital ? F("selected") : F(""); html += F(">Digital</option><option value='0' "); html += !rpmConfig.is_digital ? F("selected") : F(""); html += F(">Analog</option></select><br><br>");
+    
+    // is_digital entfernt, da es in der RpmConfig-Struct nicht mehr existiert
+    // html += F("Sensor Typ: <select name='is_digital'><option value='1' "); html += rpmConfig.is_digital ? F("selected") : F(""); html += F(">Digital</option><option value='0' "); html += !rpmConfig.is_digital ? F("selected") : F(""); html += F(">Analog</option></select><br><br>");
     
     // --- 2. Statische Zündungs-Justierung (Mechanik) ---
     html += F("<h2>2. Statische Zündungs-Justierung (Mechanik)</h2>");
     html += F("Trigger Offset (&deg; v.OT): <input type='number' name='offset' min='0' max='360' value='");
     html += String(timingConfig.trigger_offset_deg); html += F("' required><br>");
-    html += F("TDC Feinjustierung (&deg;): <input type='number' name='tdc' step='0.1' value='");
-    html += String(timingConfig.TDC_adjust_deg, 1); html += F("' required><br><br>");
+    
+    // TDC_adjust_deg existiert in IgnitionTimingConfig nicht mehr, es ist jetzt tdc_offset_ms
+    // Wir lassen es hier temporär weg oder verwenden einen Ersatz. Wir verwenden den Offset für beides, bis die Dwell-Logik fertig ist.
+    html += F("TDC Feinjustierung (ms Offset): <input type='number' name='tdc' step='0.1' value='");
+    html += String(timingConfig.tdc_offset_ms, 1); html += F("' required><br><br>"); 
 
     // --- 3. Zündspule (Elektrische Kalibrierung) ---
     html += F("<h2>3. Zündspule (Elektrische Kalibrierung)</h2>");
@@ -596,9 +505,9 @@ void handleSaveRpmConfig() {
     // Daten auslesen und validieren
     int pulses = server.arg(F("pulses")).toInt();
     int offset = server.arg(F("offset")).toInt();
-    float tdc = server.arg(F("tdc")).toFloat();
-    // bool is_digital = server.arg(F("is_digital")).toInt() == 1; // Muss im Struct-Update beachtet werden
-
+    float tdc = server.arg(F("tdc")).toFloat(); // Ist jetzt tdc_offset_ms
+    // bool is_digital = server.arg(F("is_digital")).toInt() == 1; // Entfernt
+    
     // Spulendaten auslesen
     float rp = server.arg(F("rp")).toFloat();
     float rext = server.arg(F("rext")).toFloat();
@@ -615,9 +524,9 @@ void handleSaveRpmConfig() {
     // On-the-Fly Update der globalen VOLATILE Variablen
     noInterrupts();
     rpmConfig.pulses_per_revolution = pulses;
-    // rpmConfig.is_digital = is_digital; // Muss im Formular angepasst werden
+    // rpmConfig.is_digital = is_digital; // Entfernt
     timingConfig.trigger_offset_deg = offset;
-    timingConfig.TDC_adjust_deg = tdc;
+    timingConfig.tdc_offset_ms = tdc; // NEU: Anpassung des Namens
 
     // Zündspulen Configs aktualisieren
     coilConfig.primary_resistance_ohm = rp;
@@ -637,6 +546,7 @@ void handleSaveRpmConfig() {
             ESP.restart(); 
             return;
         } else {
+            LOG(LOG_ERROR, "Speichern der Konfiguration fehlgeschlagen.");
             server.send(500, F("text/plain"), F("Fehler beim Speichern der Konfiguration."));
             return;
         }
