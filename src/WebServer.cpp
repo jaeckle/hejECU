@@ -1,4 +1,15 @@
-// WebServer.cpp
+/*
+ * Copyright (c) 2025 "hej und Gemini" (Contributor: [Ihr GitHub-Username])
+ *
+ * This software is licensed under the GNU General Public License v3.0 (GPL-3.0).
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation.
+ *
+ * A copy of the license is provided in the LICENSE file in the project root.
+ */
+
+ // WebServer.cpp
 #include "WebServer.h" 
 #include <LittleFS.h>
 #include <ArduinoOTA.h> 
