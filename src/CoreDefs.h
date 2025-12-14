@@ -33,8 +33,6 @@ enum LogLevel
 };
 
 // NEUE 2D MAP STRUKTUR FÜR BILINEARE INTERPOLATION
-// Die Map ist als Gitter definiert:
-// angle_data[tps_index][rpm_index] = Zündwinkel
 struct IgnitionMap2D
 {
     std::vector<int> rpm_axis;                // Die X-Achse (z.B. 0, 1000, 2000, ...)
@@ -64,6 +62,13 @@ struct IgnitionCoilConfig
     float fixed_dwell_ms;
 };
 
+// NEUE STRUCT HINZUGEFÜGT (JETZT AUF DER KORREKTEN POSITION)
+struct SpeedConfig
+{
+    int sprocket_teeth;         // Zähne des Ritzels
+    int wheel_circumference_mm; // Umfang des Rades in mm
+};
+
 // =========================================================
 // 2. EXTERN DEKLARIERTE GLOBALE VARIABLEN
 // =========================================================
@@ -86,8 +91,9 @@ extern volatile unsigned long last_critical_timestamp_ms;
 extern struct RpmConfig rpmConfig;
 extern struct IgnitionTimingConfig timingConfig;
 extern struct IgnitionCoilConfig coilConfig;
+extern struct SpeedConfig speedConfig; // NEU: SpeedConfig extern deklariert
 
-extern IgnitionMap2D ignitionMap2D; // NEU: Unsere zentrale Kennfeld-Struktur
+extern IgnitionMap2D ignitionMap2D;
 
 // =========================================================
 // 3. EXTERN DEKLARIERTE FUNKTIONEN

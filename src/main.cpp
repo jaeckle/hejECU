@@ -29,7 +29,7 @@ extern "C"
 #include "user_interface.h"
 }
 
-// NEUE HEADER INKLUSIONEN
+// HEADER INKLUSIONEN
 #include "CoreDefs.h"
 #include "WebServer.h"
 
@@ -115,6 +115,8 @@ const int PIN_BLINK_RIGHT = D3;
 struct RpmConfig rpmConfig = {1, true, IGNITION_INPUT_PIN};
 struct IgnitionTimingConfig timingConfig = {60, 0.0f};
 struct IgnitionCoilConfig coilConfig = {0.2f, 2.0f, 4.0f, 8.0f, 3.5f};
+// NEU: Definition der SpeedConfig (MUSS NACH DEN ANDEREN STRUCTS SEIN)
+struct SpeedConfig speedConfig = {14, 1985};
 
 // --- ZENTRALE DATENSTRUKTUREN ---
 struct IgnitionState
@@ -303,6 +305,7 @@ const int CALC_FREQUENCY = 100;
 // --- NOTFALL-FALLBACK KENNFIELD (PROGMEM) ---
 // NEU: Im 2D-Achsen-Format (TPS-Achse | RPM-Achse | Datenmatrix)
 const char *FALLBACK_CURVE_JSON = R"({"ssid": "", "password": "", "ap_ssid": "esp-aktor", "ap_password": "MeinSicheresPasswort", "rpm_pulses": 1, "rpm_type": true, "timing_offset": 60, "timing_tdc": 0.0, "primary_resistance_ohm": 0.2, "external_resistance_ohm": 2.0, "primary_inductance_mH": 4.0, "target_current_A": 8.0, "fixed_dwell_ms": 3.5, "log_level": 0, 
+"sprocket_teeth": 14, "wheel_circumference_mm": 1985, 
 "map2d": {
     "rpm_axis": [0, 2000, 4000, 8000],
     "tps_axis": [0, 256, 512, 1023],
@@ -340,6 +343,7 @@ float getSpeedStateSafe();
 // Helfer (Implementierung folgt)
 void checkHeapHealth();
 int calculateBilinearAngle(int rpm, int tps);
+float calculateDwellTimeMs(); // NEU: Dwell-Time-Calculator
 void updateIgnitionParameters();
 void updateSensorState(SensorID id, float value);
 void updateSensorsRoundRobin();
@@ -465,8 +469,6 @@ void setPinState(int pinCode, bool targetState)
     LOG(LOG_DEBUG, "Pin %d -> %s", pinCode, targetState ? "HIGH" : "LOW");
 }
 
-// main.cpp (Neue Implementierung der Funktion)
-
 // WICHTIG: Helper-Funktion für die Interpolation entlang einer Achse (linear)
 // Z = Z1 + (Z2 - Z1) * ((X - X1) / (X2 - X1))
 float interpolateLinear(float x, float x1, float x2, float z1, float z2)
@@ -477,12 +479,10 @@ float interpolateLinear(float x, float x1, float x2, float z1, float z2)
     return z1 + (z2 - z1) * factor;
 }
 
-// In CoreDefs.h extern deklariert
-// Berechnet den Zündwinkel für gegebene RPM und TPS-Werte unter Verwendung bilinearer Interpolation.
+// Implementierung der Bilinearen Interpolation
 int calculateBilinearAngle(int rpm, int tps)
 {
     // 1. Thread-sichere Kopie der Achsen und Daten
-    // Kopieren in lokale Vektoren, da diese Strukturen volatil von saveConfig/loadConfig geändert werden können.
     std::vector<int> rpm_axis;                // X-Achse
     std::vector<int> tps_axis;                // Y-Achse
     std::vector<std::vector<int>> angle_data; // Z-Daten [tps][rpm]
@@ -499,20 +499,16 @@ int calculateBilinearAngle(int rpm, int tps)
     // 2. Failsafe: Minimale Map-Größe prüfen
     if (num_rpm < 2 || num_tps < 2)
     {
-        // Fallback-Winkel 10°
         return 10;
     }
 
-    // 3. Clamping der Input-Werte (Begrenzung auf den Achsenbereich)
-
-    // X-Achse (RPM)
+    // 3. Clamping der Input-Werte
     float rpm_clamped = (float)rpm;
     if (rpm_clamped < rpm_axis.front())
         rpm_clamped = rpm_axis.front();
     if (rpm_clamped > rpm_axis.back())
         rpm_clamped = rpm_axis.back();
 
-    // Y-Achse (TPS)
     float tps_clamped = (float)tps;
     if (tps_clamped < tps_axis.front())
         tps_clamped = tps_axis.front();
@@ -556,6 +552,10 @@ int calculateBilinearAngle(int rpm, int tps)
     float y2 = (float)tps_axis[tps_index2];
 
     // Z-Werte (Winkel an den Ecken)
+    // Sicherheitshalber Index-Check der Datenmatrix (obwohl durch vorherige Checks unwahrscheinlich)
+    if (tps_index2 >= angle_data.size() || rpm_index2 >= angle_data[tps_index2].size())
+        return 10;
+
     float z11 = (float)angle_data[tps_index1][rpm_index1]; // Q11 (X1, Y1)
     float z21 = (float)angle_data[tps_index1][rpm_index2]; // Q21 (X2, Y1)
     float z12 = (float)angle_data[tps_index2][rpm_index1]; // Q12 (X1, Y2)
@@ -563,20 +563,66 @@ int calculateBilinearAngle(int rpm, int tps)
 
     // 6. Bilineare Interpolation (zuerst entlang X, dann entlang Y)
 
-    // A. Lineare Interpolation entlang der Y1-Achse (X-Achse), ergibt Z_A (für Y=Y1)
-    // Interpoliere zwischen Z11 (bei X1) und Z21 (bei X2) am Wert rpm_clamped (X)
-    float z_a = interpolateLinear(rpm_clamped, x1, x2, z11, z21);
+    float z_a = interpolateLinear(rpm_clamped, x1, x2, z11, z21); // Interpolation entlang Y1
+    float z_b = interpolateLinear(rpm_clamped, x1, x2, z12, z22); // Interpolation entlang Y2
 
-    // B. Lineare Interpolation entlang der Y2-Achse (X-Achse), ergibt Z_B (für Y=Y2)
-    // Interpoliere zwischen Z12 (bei X1) und Z22 (bei X2) am Wert rpm_clamped (X)
-    float z_b = interpolateLinear(rpm_clamped, x1, x2, z12, z22);
-
-    // C. Finale Lineare Interpolation entlang der X-Achse (Y-Achse)
-    // Interpoliere zwischen Z_A (bei Y1) und Z_B (bei Y2) am Wert tps_clamped (Y)
-    float final_angle = interpolateLinear(tps_clamped, y1, y2, z_a, z_b);
+    float final_angle = interpolateLinear(tps_clamped, y1, y2, z_a, z_b); // Finale Interpolation entlang X
 
     // 7. Ergebnis runden und zurückgeben
     return (int)std::round(final_angle);
+}
+
+// NEUE Implementierung: Berechnet die Dwell-Zeit dynamisch
+float calculateDwellTimeMs()
+{
+    // 1. Hole die sicheren, aktuellen Werte
+    float v_batt = getSensorBattVSafe(); // Echte Batteriespannung (V)
+
+    float R_primary;
+    float R_external;
+    float L_mH;
+    float I_target;
+    float fixed_dwell;
+
+    noInterrupts();
+    R_primary = coilConfig.primary_resistance_ohm;
+    R_external = coilConfig.external_resistance_ohm;
+    L_mH = coilConfig.primary_inductance_mH;
+    I_target = coilConfig.target_current_A;
+    fixed_dwell = coilConfig.fixed_dwell_ms;
+    interrupts();
+
+    float R_total = R_primary + R_external; // Gesamtwiderstand in Ohm
+    float L_Henry = L_mH / 1000.0f;         // Induktivität in Henry (für die Formel)
+
+    // Failsafe/Boundary Checks
+    if (v_batt < 8.0f || R_total < 0.1f || L_Henry < 0.0001f)
+    {
+        // Bei kritischen Werten oder fehlendem Sensor auf den festen Wert zurückfallen.
+        return fixed_dwell;
+    }
+
+    float I_max = v_batt / R_total; // Maximal erreichbarer Strom (steady state)
+
+    // Überprüfung, ob der Zielstrom I_target überhaupt erreicht werden kann
+    if (I_target >= I_max)
+    {
+        // Zielstrom ist nicht erreichbar oder zu nah am Maximum ->
+        // Wähle die Fixed Dwell Time als sicheren Kompromiss oder max. 4ms.
+        return std::min(std::max(fixed_dwell, 4.0f), 8.0f); // Begrenzung hinzugefügt
+    }
+
+    // Berechnung der Dwell-Zeit in Sekunden (t_dwell = - (L/R) * ln(1 - (I_target * R) / V_batt))
+    // Wir verwenden logf (float-Version von log/ln)
+    float exponent_term = 1.0f - (I_target * R_total) / v_batt;
+
+    // Berechnung in Sekunden, dann * 1000 für Millisekunden
+    float t_dwell_seconds = -(L_Henry / R_total) * logf(exponent_term);
+
+    float t_dwell_ms = t_dwell_seconds * 1000.0f;
+
+    // Sicherheits-Clipping (z.B. zwischen 1.0ms und 8.0ms)
+    return std::min(std::max(t_dwell_ms, 1.0f), 8.0f);
 }
 
 void IRAM_ATTR fireIgnitionOutput()
@@ -716,23 +762,9 @@ void updateIgnitionParameters()
 
     int advance_angle = calculateBilinearAngle(rpm_copy, tps_value);
 
-    float Dwell_ms_calc;
-    float fixed_dwell;
-    noInterrupts();
-    float R_total = coilConfig.primary_resistance_ohm + coilConfig.external_resistance_ohm;
-    float L_mH = coilConfig.primary_inductance_mH;
-    fixed_dwell = coilConfig.fixed_dwell_ms;
-    interrupts();
-
-    if (R_total > 0.1f)
-    {
-        Dwell_ms_calc = L_mH / R_total;
-    }
-    else
-    {
-        Dwell_ms_calc = fixed_dwell;
-    }
-    unsigned long Dwell_micros = (unsigned long)(std::max(Dwell_ms_calc, fixed_dwell) * 1000.0f);
+    // NEU: Dynamische DWELL-Berechnung (ersetzt statische Logik)
+    float Dwell_ms = calculateDwellTimeMs();
+    unsigned long Dwell_micros = (unsigned long)(Dwell_ms * 1000.0f);
 
     if (period > 1000)
     {
@@ -836,6 +868,7 @@ void printLoopStatus()
 void updateSpeedCalibrationFactor()
 {
     noInterrupts();
+    // Hier müsste die Berechnung des Kalibrierungsfaktors basierend auf speedConfig.sprocket_teeth und wheel_circumference_mm erfolgen
     interrupts();
 }
 
@@ -850,7 +883,7 @@ bool loadDataFromJson(const char *jsonString)
         return false;
     }
 
-    // --- LÄDT KONFIGURATION (Bleibt gleich) ---
+    // --- LÄDT KONFIGURATION ---
     wifiSsid = doc[F("ssid")].as<String>();
     wifiPassword = doc[F("password")] | "";
     apSsid = doc[F("ap_ssid")] | "esp-aktor";
@@ -863,17 +896,23 @@ bool loadDataFromJson(const char *jsonString)
     timingConfig.trigger_offset_deg = doc[F("timing_offset")] | 60;
     coilConfig.primary_resistance_ohm = doc[F("primary_resistance_ohm")] | 0.2f;
     coilConfig.external_resistance_ohm = doc[F("external_resistance_ohm")] | 2.0f;
+    coilConfig.fixed_dwell_ms = doc[F("fixed_dwell_ms")] | 3.5f; // Sicherstellen, dass dies geladen wird
 
-    // DEBUG-Ausgabe ...
+    // NEU: LÄDT GESCHWINDIGKEITSPARAMETER
+    speedConfig.sprocket_teeth = doc[F("sprocket_teeth")] | 14;
+    speedConfig.wheel_circumference_mm = doc[F("wheel_circumference_mm")] | 1985;
+
+    // === DEBUG AUSGABE DER GELADENEN WERTE ===
     LOG(LOG_DEBUG, "--- GELADENE KONFIGURATION ---");
     LOG(LOG_DEBUG, "STA SSID: %s (Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
     LOG(LOG_DEBUG, "STA PW Länge: %d", wifiPassword.length());
     LOG(LOG_DEBUG, "AP SSID: %s | AP PW Länge: %d", apSsid.c_str(), apPassword.length());
     LOG(LOG_DEBUG, "Log Level: %d", (int)activeLogLevel);
     LOG(LOG_DEBUG, "RPM Pulses: %d | Offset: %d deg", rpmConfig.pulses_per_revolution, timingConfig.trigger_offset_deg);
+    LOG(LOG_DEBUG, "Dwell: %.1fms | Teeth: %d | Circumference: %dmm", coilConfig.fixed_dwell_ms, speedConfig.sprocket_teeth, speedConfig.wheel_circumference_mm);
 
     // ----------------------------------------------------------------
-    // NEU: MAP LADEN UND VALIDIERUNG (2D-Achsen-Format)
+    // MAP LADEN UND VALIDIERUNG (2D-Achsen-Format)
     // ----------------------------------------------------------------
 
     JsonObject map2d = doc[F("map2d")];
@@ -995,8 +1034,13 @@ bool saveConfig()
     doc[F("timing_offset")] = timingConfig.trigger_offset_deg;
     doc[F("primary_resistance_ohm")] = coilConfig.primary_resistance_ohm;
     doc[F("external_resistance_ohm")] = coilConfig.external_resistance_ohm;
+    doc[F("fixed_dwell_ms")] = coilConfig.fixed_dwell_ms; // Speichern
 
-    // NEU: MAP IM 2D-ACHSEN-FORMAT SPEICHERN
+    // NEU: GESCHWINDIGKEITSPARAMETER SPEICHERN
+    doc[F("sprocket_teeth")] = speedConfig.sprocket_teeth;
+    doc[F("wheel_circumference_mm")] = speedConfig.wheel_circumference_mm;
+
+    // MAP IM 2D-ACHSEN-FORMAT SPEICHERN
     JsonObject map2d = doc.createNestedObject(F("map2d"));
 
     // 1. Achsen
@@ -1071,7 +1115,7 @@ void setup()
     if (!loadConfig())
         loadDataFromJson(FALLBACK_CURVE_JSON);
 
-    LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiPassword.length());
+    LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
 
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
