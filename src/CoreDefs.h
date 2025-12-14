@@ -24,7 +24,8 @@
 // 1. TYPEN UND ENUMS
 // =========================================================
 
-enum LogLevel {
+enum LogLevel
+{
     LOG_DEBUG = 0,
     LOG_INFO = 1,
     LOG_WARN = 2,
@@ -34,31 +35,34 @@ enum LogLevel {
 // NEUE 2D MAP STRUKTUR FÜR BILINEARE INTERPOLATION
 // Die Map ist als Gitter definiert:
 // angle_data[tps_index][rpm_index] = Zündwinkel
-struct IgnitionMap2D {
-    std::vector<int> rpm_axis;    // Die X-Achse (z.B. 0, 1000, 2000, ...)
-    std::vector<int> tps_axis;    // Die Y-Achse (z.B. 0, 256, 512, 1023)
+struct IgnitionMap2D
+{
+    std::vector<int> rpm_axis;                // Die X-Achse (z.B. 0, 1000, 2000, ...)
+    std::vector<int> tps_axis;                // Die Y-Achse (z.B. 0, 256, 512, 1023)
     std::vector<std::vector<int>> angle_data; // Die eigentlichen Winkelwerte [tps][rpm]
 };
 
-struct RpmConfig {
+struct RpmConfig
+{
     int pulses_per_revolution;
     bool ignition_active;
     int input_pin;
 };
 
-struct IgnitionTimingConfig {
+struct IgnitionTimingConfig
+{
     int trigger_offset_deg;
     float tdc_offset_ms;
 };
 
-struct IgnitionCoilConfig {
+struct IgnitionCoilConfig
+{
     float primary_resistance_ohm;
     float external_resistance_ohm;
     float primary_inductance_mH;
     float target_current_A;
     float fixed_dwell_ms;
 };
-
 
 // =========================================================
 // 2. EXTERN DEKLARIERTE GLOBALE VARIABLEN
@@ -83,7 +87,6 @@ extern struct RpmConfig rpmConfig;
 extern struct IgnitionTimingConfig timingConfig;
 extern struct IgnitionCoilConfig coilConfig;
 
-// NEU: Alte ignitionMap (falls sie existierte) wurde entfernt.
 extern IgnitionMap2D ignitionMap2D; // NEU: Unsere zentrale Kennfeld-Struktur
 
 // =========================================================
@@ -91,14 +94,13 @@ extern IgnitionMap2D ignitionMap2D; // NEU: Unsere zentrale Kennfeld-Struktur
 // =========================================================
 
 // Logger
-extern void app_log(LogLevel level, const char* file, int line, int logLine, const char* format, ...);
+extern void app_log(LogLevel level, const char *file, int line, int logLine, const char *format, ...);
 
 // Getter (für sicheren Zugriff auf volatile Daten)
 extern unsigned long getIgnitionPeriodSafe();
 extern int getIgnitionRpmSafe();
 extern unsigned long getAdvanceMicrosSafe();
 extern float getSpeedStateSafe();
-extern bool isAuthorized(); // Authentifizierungsfunktion
 
 // SENSOR GETTER
 extern float getSensorTpsRawSafe();
@@ -108,13 +110,12 @@ extern float getSensorSpeedSafe();
 
 // Helfer
 extern bool saveConfig();
-extern bool loadDataFromJson(const char* jsonString);
-extern const char* FALLBACK_CURVE_JSON; 
+extern bool loadDataFromJson(const char *jsonString);
+extern const char *FALLBACK_CURVE_JSON;
 extern int pinNameToCode(String pinName);
 extern void setPinState(int pinCode, bool targetState);
 extern void setup_server_routes();
 extern void setup_ota();
-extern void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char* status);
-
+extern void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char *status);
 
 #endif // COREDEFS_H

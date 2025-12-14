@@ -3,42 +3,56 @@
     "password": "wir2wir2wir2",
     "ap_ssid": "ECU-Konfigurator-AP",
     "ap_password": "passwort",
-
     "rpm_pulses": 1,
     "rpm_type": true,
     "timing_offset": 60,
     "timing_tdc": 0.5,
-
     "primary_resistance_ohm": 0.2,
     "external_resistance_ohm": 2.0,
     "primary_inductance_mH": 4.0,
     "target_current_A": 8.0,
     "log_level": 0,
-
     "fixed_dwell_ms": 3.5,
     "sprocket_teeth": 26,
     "wheel_circumference_mm": 1985,
-    
-    "map": [
-        {
-            "rpm": 0,
-            "tps": 0,
-            "angle": 10
-        },
-        {
-            "rpm": 1000,
-            "tps": 200,
-            "angle": 25
-        },
-        {
-            "rpm": 4000,
-            "tps": 512,
-            "angle": 22
-        },
-        {
-            "rpm": 8000,
-            "tps": 1023,
-            "angle": 8
-        }
-    ]
+    "map2d": {
+        "rpm_axis": [
+            0,
+            2000,
+            4000,
+            8000
+        ],
+        "tps_axis": [
+            0,
+            256,
+            512,
+            1023
+        ],
+        "angle_data": [
+            [
+                8,
+                10,
+                15,
+                12
+            ],
+            [
+                10,
+                15,
+                20,
+                18
+            ],
+            [
+                12,
+                20,
+                25,
+                22
+            ],
+            [
+                15,
+                22,
+                28,
+                25
+            ]
+        ]
+    }
 }

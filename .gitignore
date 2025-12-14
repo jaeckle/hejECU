@@ -7,3 +7,5 @@
 
 # GEHEIMNISSE/WLAN-DATEN
 src/secrets.h
+# Lokale Konfigurationsdateien mit Secrets ausschließen
+config.json
