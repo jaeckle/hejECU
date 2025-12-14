@@ -465,78 +465,118 @@ void setPinState(int pinCode, bool targetState)
     LOG(LOG_DEBUG, "Pin %d -> %s", pinCode, targetState ? "HIGH" : "LOW");
 }
 
-// TEMPORÄRE IMPLEMENTIERUNG: Lineare Interpolation (wird im nächsten Schritt ersetzt)
+// main.cpp (Neue Implementierung der Funktion)
+
+// WICHTIG: Helper-Funktion für die Interpolation entlang einer Achse (linear)
+// Z = Z1 + (Z2 - Z1) * ((X - X1) / (X2 - X1))
+float interpolateLinear(float x, float x1, float x2, float z1, float z2)
+{
+    if (x1 == x2)
+        return z1; // Vermeidet Division durch Null (z.B. bei geclippten Werten)
+    float factor = (x - x1) / (x2 - x1);
+    return z1 + (z2 - z1) * factor;
+}
+
+// In CoreDefs.h extern deklariert
+// Berechnet den Zündwinkel für gegebene RPM und TPS-Werte unter Verwendung bilinearer Interpolation.
 int calculateBilinearAngle(int rpm, int tps)
 {
-    // 1. Failsafe und Thread-Sicherheit
-    if (ignitionMap2D.rpm_axis.empty())
-        return 10; // Standardwinkel 10° bei leerer Map
+    // 1. Thread-sichere Kopie der Achsen und Daten
+    // Kopieren in lokale Vektoren, da diese Strukturen volatil von saveConfig/loadConfig geändert werden können.
+    std::vector<int> rpm_axis;                // X-Achse
+    std::vector<int> tps_axis;                // Y-Achse
+    std::vector<std::vector<int>> angle_data; // Z-Daten [tps][rpm]
 
-    // NOTE: Wir verwenden hier rpm_axis als Ersatz für die frühere, sortierte flache Map.
-    std::vector<int> rpmAxisCopy;
     noInterrupts();
-    rpmAxisCopy = ignitionMap2D.rpm_axis;
+    rpm_axis = ignitionMap2D.rpm_axis;
+    tps_axis = ignitionMap2D.tps_axis;
+    angle_data = ignitionMap2D.angle_data;
     interrupts();
 
-    // 2. BOUNDARY CHECKING (Clipping der RPM-Werte)
+    size_t num_rpm = rpm_axis.size();
+    size_t num_tps = tps_axis.size();
 
-    int minRpm = rpmAxisCopy.front();
-    int maxRpm = rpmAxisCopy.back();
-
-    if (rpm <= minRpm)
-        rpm = minRpm;
-    if (rpm >= maxRpm)
-        rpm = maxRpm;
-
-    // 3. Finden der umrahmenden Punkte (Q_low und Q_high)
-
-    int rpm_low_value = minRpm;
-    int rpm_high_value = maxRpm;
-    int angle_low = 10;
-    int angle_high = 10;
-
-    // Suche nach den nächstgelegenen Achsen-Werten (nur RPM)
-    for (size_t i = 0; i < rpmAxisCopy.size(); ++i)
+    // 2. Failsafe: Minimale Map-Größe prüfen
+    if (num_rpm < 2 || num_tps < 2)
     {
-        int r = rpmAxisCopy[i];
+        // Fallback-Winkel 10°
+        return 10;
+    }
 
-        if (r <= rpm)
+    // 3. Clamping der Input-Werte (Begrenzung auf den Achsenbereich)
+
+    // X-Achse (RPM)
+    float rpm_clamped = (float)rpm;
+    if (rpm_clamped < rpm_axis.front())
+        rpm_clamped = rpm_axis.front();
+    if (rpm_clamped > rpm_axis.back())
+        rpm_clamped = rpm_axis.back();
+
+    // Y-Achse (TPS)
+    float tps_clamped = (float)tps;
+    if (tps_clamped < tps_axis.front())
+        tps_clamped = tps_axis.front();
+    if (tps_clamped > tps_axis.back())
+        tps_clamped = tps_axis.back();
+
+    // 4. Index-Suche: Die vier umrahmenden Punkte (Q11, Q21, Q12, Q22) finden
+
+    // Finde den Index des unteren Nachbarn auf der RPM-Achse (X1)
+    size_t rpm_index1 = 0;
+    for (size_t i = 0; i < num_rpm - 1; ++i)
+    {
+        if (rpm_axis[i + 1] > rpm_clamped)
         {
-            rpm_low_value = r;
-            // TEMPORÄRE FALLBACKS (Müssen im echten Bilinear-Code ersetzt werden):
-            // Wir verwenden den ersten TPS-Row (Index 0) als Näherung für den Winkel.
-            if (!ignitionMap2D.angle_data.empty() && !ignitionMap2D.angle_data[0].empty() && i < ignitionMap2D.angle_data[0].size())
-            {
-                angle_low = ignitionMap2D.angle_data[0][i];
-            }
+            rpm_index1 = i;
+            break;
         }
+        rpm_index1 = i + 1; // Falls rpm_clamped > max(rpm_axis), bleibt es beim letzten Index
+    }
+    size_t rpm_index2 = std::min(rpm_index1 + 1, num_rpm - 1);
 
-        if (r >= rpm)
+    // Finde den Index des unteren Nachbarn auf der TPS-Achse (Y1)
+    size_t tps_index1 = 0;
+    for (size_t j = 0; j < num_tps - 1; ++j)
+    {
+        if (tps_axis[j + 1] > tps_clamped)
         {
-            rpm_high_value = r;
-            if (!ignitionMap2D.angle_data.empty() && !ignitionMap2D.angle_data[0].empty() && i < ignitionMap2D.angle_data[0].size())
-            {
-                angle_high = ignitionMap2D.angle_data[0][i];
-            }
-            break; // Erste obere Grenze gefunden
+            tps_index1 = j;
+            break;
         }
+        tps_index1 = j + 1; // Falls tps_clamped > max(tps_axis), bleibt es beim letzten Index
     }
+    size_t tps_index2 = std::min(tps_index1 + 1, num_tps - 1);
 
-    // 4. LINEARE INTERPOLATION (entlang der RPM-Achse)
+    // 5. Hole die 4 Eckpunkte (Z11, Z21, Z12, Z22) und Achsenwerte (X1, X2, Y1, Y2)
 
-    float angle = 0.0f;
+    // Achsenwerte (Koordinaten des Gitters)
+    float x1 = (float)rpm_axis[rpm_index1];
+    float x2 = (float)rpm_axis[rpm_index2];
+    float y1 = (float)tps_axis[tps_index1];
+    float y2 = (float)tps_axis[tps_index2];
 
-    if (rpm_low_value == rpm_high_value)
-    {
-        angle = angle_low;
-    }
-    else
-    {
-        float factor = (float)(rpm - rpm_low_value) / (float)(rpm_high_value - rpm_low_value);
-        angle = angle_low + factor * (angle_high - angle_low);
-    }
+    // Z-Werte (Winkel an den Ecken)
+    float z11 = (float)angle_data[tps_index1][rpm_index1]; // Q11 (X1, Y1)
+    float z21 = (float)angle_data[tps_index1][rpm_index2]; // Q21 (X2, Y1)
+    float z12 = (float)angle_data[tps_index2][rpm_index1]; // Q12 (X1, Y2)
+    float z22 = (float)angle_data[tps_index2][rpm_index2]; // Q22 (X2, Y2)
 
-    return (int)round(angle);
+    // 6. Bilineare Interpolation (zuerst entlang X, dann entlang Y)
+
+    // A. Lineare Interpolation entlang der Y1-Achse (X-Achse), ergibt Z_A (für Y=Y1)
+    // Interpoliere zwischen Z11 (bei X1) und Z21 (bei X2) am Wert rpm_clamped (X)
+    float z_a = interpolateLinear(rpm_clamped, x1, x2, z11, z21);
+
+    // B. Lineare Interpolation entlang der Y2-Achse (X-Achse), ergibt Z_B (für Y=Y2)
+    // Interpoliere zwischen Z12 (bei X1) und Z22 (bei X2) am Wert rpm_clamped (X)
+    float z_b = interpolateLinear(rpm_clamped, x1, x2, z12, z22);
+
+    // C. Finale Lineare Interpolation entlang der X-Achse (Y-Achse)
+    // Interpoliere zwischen Z_A (bei Y1) und Z_B (bei Y2) am Wert tps_clamped (Y)
+    float final_angle = interpolateLinear(tps_clamped, y1, y2, z_a, z_b);
+
+    // 7. Ergebnis runden und zurückgeben
+    return (int)std::round(final_angle);
 }
 
 void IRAM_ATTR fireIgnitionOutput()
