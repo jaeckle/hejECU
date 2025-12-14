@@ -56,7 +56,7 @@ int angle_data[MAP_SIZE][MAP_SIZE];
 // --- WICHTIGE GLOBALE STATUSVARIABLEN (Definitionen) ---
 bool serverStarted = false;
 bool startApMode = false;
-volatile LogLevel activeLogLevel = LOG_DEBUG;
+LogLevel activeLogLevel = LOG_DEBUG;
 std::vector<String> startupLogBuffer;
 
 // PIN PLATZHALTER
@@ -70,19 +70,13 @@ const int PIN_BLINK_RIGHT = D3;
 
 // Beispiel: Die korrigierte RpmConfig Initialisierung (Aktion 35)
 RpmConfig rpmConfig = {2, 10000}; // {pulses_per_revolution, max_rpm}
-struct IgnitionTimingConfig timingConfig = {60, 0.0f};
-struct IgnitionCoilConfig coilConfig = {0.2f, 2.0f, 4.0f, 8.0f, 3.5f};
+IgnitionTimingConfig timingConfig = {60, 0.0f};
+IgnitionCoilConfig coilConfig = {0.2f, 2.0f, 4.0f, 8.0f, 3.5f};
 struct SpeedConfig speedConfig = {14, 1985};
 
 // --- Logger Definitionen (Aktion 38) ---
 // LogLevel activeLogLevel wird in der Konfigurationsfunktion überschrieben
-LogLevel activeLogLevel = LOG_DEBUG; 
-std::vector<String> startupLogBuffer; 
-
-// --- Zündwinkel-Kennfeld-Daten (Definitionen der extern Arrays) ---
-int rpm_axis[MAP_SIZE];
-int tps_axis[MAP_SIZE];
-int angle_data[MAP_SIZE][MAP_SIZE];
+// LogLevel activeLogLevel = LOG_DEBUG; 
 
 // --- Weitere Konfigurationen (Initialisierung der structs) ---
 // HINWEIS: Prüfen Sie Ihre CoreDefs.h auf die exakte Struktur. 
@@ -122,25 +116,7 @@ struct SensorState
     volatile float luftfeuchtigkeit_umgebung_pct;
 } sensor = {0, 0, false, false, false, false, false, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
-IgnitionMap2D ignitionMap2D; // NEU: Definition der 2D-Map
-
-// --- SENSOR ABSTRAKTION UND VERWALTUNG (Klassen) ---
-enum SensorID
-{
-    SID_TPS_RAW,
-    SID_SPEED,
-    SID_BATT_V,
-    SID_TEMP_KOPF,
-    SID_TEMP_LUFT,
-    SID_TEMP_UMG,
-    SID_FEUCHTIGKEIT,
-    SID_LIGHT,
-    SID_FARLIGHT,
-    SID_BRAKE,
-    SID_BLINK_L,
-    SID_BLINK_R,
-    SID_COUNT
-};
+//IgnitionMap2D ignitionMap2D; // NEU: Definition der 2D-Map
 class BaseSensor
 {
 public:

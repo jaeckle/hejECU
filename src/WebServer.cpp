@@ -14,7 +14,7 @@
 
 // Externe Deklarationen (aus CoreDefs.h und AppLogger.h)
 extern ESP8266WebServer server;
-extern volatile LogLevel activeLogLevel;
+ //volatile LogLevel activeLogLevel;
 extern String wifiSsid; 
 extern String wifiPassword; 
 extern String apSsid; 
@@ -33,7 +33,7 @@ extern const char *LOG_FILENAME;
 extern struct RpmConfig rpmConfig;
 extern struct IgnitionTimingConfig timingConfig;
 extern struct IgnitionCoilConfig coilConfig;
-extern IgnitionMap2D ignitionMap2D; 
+ //IgnitionMap2D ignitionMap2D; 
 
 // Externe Funktionen
 extern bool saveConfig();
