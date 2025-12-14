@@ -45,9 +45,13 @@ const int LED_PIN = D4;
 const int BUTTON_PIN = D5;
 const char *HTTP_USERNAME = "admin";
 bool webserverRunning = false;
-IPAddress apIP(192, 168, 4, 1); // <--- Definition mit Wert
+IPAddress apIP(192, 168, 4, 1);      // <--- Definition mit Wert
 IPAddress netMask(255, 255, 255, 0); // <--- Definition mit Wert
 IPAddress gatewayIP(192, 168, 4, 1); // <--- Definition mit Wert
+
+int rpm_axis[MAP_SIZE];
+int tps_axis[MAP_SIZE];
+int angle_data[MAP_SIZE][MAP_SIZE];
 
 // --- WICHTIGE GLOBALE STATUSVARIABLEN (Definitionen) ---
 bool serverStarted = false;
@@ -981,137 +985,261 @@ bool saveConfig()
 
 bool loadConfig()
 {
+    // ------------------------------------------------------------------------
+    // SCHRITT 1: Fallback-Werte setzen (FÜR ERSTEN BOOT ODER FEHLERHAFTEN START)
+    // ------------------------------------------------------------------------
+
+    // Fallback-Werte für WLAN (Hier Ihre Daten für den STA-Modus Test eintragen!)
+    wifiSsid = F("Ihre_Heim_SSID_hier");        // <--- BITTE HIER ERSETZEN
+    wifiPassword = F("Ihr_WLAN_Passwort_hier"); // <--- BITTE HIER ERSETZEN
+
+    // Fallback für AP-Modus
+    apSsid = F("esp-aktor");
+    apPassword = F("MeinSicheresPasswort");
+
+    // Fallback für Core-Einstellungen
+    activeLogLevel = LOG_INFO;
+    rpmConfig.pulses_per_revolution = 2; // Zündimpulse pro Umdrehung (Default 2)
+    rpmConfig.max_rpm = 10000;
+
+    // Fallback für Geschwindigkeitskalibrierung
+    speedConfig.sprocket_teeth = 15;
+    speedConfig.wheel_circumference_mm = 1890;
+
+    // Fallback für Zündwinkel (Statische 10° im gesamten Feld)
+    for (int i = 0; i < MAP_SIZE; ++i)
+    {
+        for (int j = 0; j < MAP_SIZE; ++j)
+        {
+            angle_data[i][j] = 10;
+        }
+    }
+
+    // Fallback für Achsen (Beispiel-Achsen)
+    // RPM: 0, 1000, 2000, 4000, 8000, 12000, 16000, 20000
+    rpm_axis[0] = 0;
+    rpm_axis[1] = 1000;
+    rpm_axis[2] = 2000;
+    rpm_axis[3] = 4000;
+    rpm_axis[4] = 8000;
+    rpm_axis[5] = 12000;
+    rpm_axis[6] = 16000;
+    rpm_axis[7] = 20000;
+
+    // TPS: 0%, 10%, 20%, 30%, 50%, 70%, 90%, 100%
+    tps_axis[0] = 0;
+    tps_axis[1] = 10;
+    tps_axis[2] = 20;
+    tps_axis[3] = 30;
+    tps_axis[4] = 50;
+    tps_axis[5] = 70;
+    tps_axis[6] = 90;
+    tps_axis[7] = 100;
+
+    // ------------------------------------------------------------------------
+    // SCHRITT 2: Versuche, die Konfigurationsdatei vom LittleFS zu laden
+    // ------------------------------------------------------------------------
     File configFile = LittleFS.open(F("/config.json"), "r");
 
-    // Fall 1: Konfigurationsdatei existiert
-    if (configFile)
+    if (!configFile)
     {
-        size_t size = configFile.size();
-        std::unique_ptr<char[]> buf(new char[size + 1]);
-        configFile.readBytes(buf.get(), size);
-        buf.get()[size] = '\0';
-        configFile.close();
-
-        if (loadDataFromJson(buf.get()))
+        // Kritisch: Wenn keine Datei existiert, speichern wir die neuen Fallbacks.
+        LOG(LOG_WARN, "Konfigurationsdatei nicht gefunden. Speichere neue Fallbacks.");
+        if (saveConfig())
         {
-            LOG(LOG_INFO, "Konfiguration aus Datei geladen.");
+            LOG(LOG_INFO, "Fallback-Konfiguration erfolgreich gespeichert.");
             return true;
         }
         else
         {
-            LOG(LOG_WARN, "Laden aus Datei fehlgeschlagen. Datei ist möglicherweise korrupt.");
+            LOG(LOG_ERROR, "Fallback-Konfiguration konnte nicht gespeichert werden.");
+            return false;
         }
     }
 
-    // Fall 2 (NEU): Datei existiert nicht oder ist korrupt -> Fallback laden und speichern
+    // Reserviere Speicher für das JSON-Dokument
+    // Berechnung: Base + (2 * MAP_SIZE * sizeof(int)) + (MAP_SIZE*MAP_SIZE * sizeof(int)) + String Overheads
+    StaticJsonDocument<2048> doc;
 
-    // 1. Fallback laden (in RAM)
-    if (!loadDataFromJson(FALLBACK_CURVE_JSON))
+    DeserializationError error = deserializeJson(doc, configFile);
+    configFile.close();
+
+    if (error)
     {
-        LOG(LOG_ERROR, "FATAL: Konnte nicht einmal Fallback-Konfig laden.");
-        return false;
+        LOG(LOG_ERROR, "Failed to parse config file: %s. Verwende Fallbacks.", error.c_str());
+        // Trotz Parsen-Fehler verwenden wir die Fallbacks, speichern diese aber nicht erneut.
+        return true;
     }
-    LOG(LOG_WARN, "Fallback-Kennfeld/Konfiguration geladen.");
 
-    // 2. Fallback-Konfig sofort speichern, um config.json zu erstellen.
-    if (!saveConfig())
+    // ------------------------------------------------------------------------
+    // SCHRITT 3: Konfiguration aus JSON übernehmen
+    // ------------------------------------------------------------------------
+
+    // WLAN
+    if (doc.containsKey(F("ssid")))
+        wifiSsid = doc[F("ssid")].as<String>();
+    if (doc.containsKey(F("password")))
+        wifiPassword = doc[F("password")].as<String>();
+    if (doc.containsKey(F("ap_ssid")))
+        apSsid = doc[F("ap_ssid")].as<String>();
+    if (doc.containsKey(F("ap_password")))
+        apPassword = doc[F("ap_password")].as<String>();
+
+    // Logging
+    if (doc.containsKey(F("log_level")))
+        activeLogLevel = (LogLevel)doc[F("log_level")].as<int>();
+
+    // RPM
+    if (doc.containsKey(F("rpm_pulses")))
+        rpmConfig.pulses_per_revolution = doc[F("rpm_pulses")].as<int>();
+    if (doc.containsKey(F("max_rpm")))
+        rpmConfig.max_rpm = doc[F("max_rpm")].as<int>();
+
+    // Speed
+    if (doc.containsKey(F("sprocket_teeth")))
+        speedConfig.sprocket_teeth = doc[F("sprocket_teeth")].as<int>();
+    if (doc.containsKey(F("wheel_circumference_mm")))
+        speedConfig.wheel_circumference_mm = doc[F("wheel_circumference_mm")].as<int>();
+
+    // Zündwinkel-Map
+    if (doc.containsKey(F("map2d")))
     {
-        LOG(LOG_ERROR, "FATAL: Konnte Standard-Konfig nicht auf LittleFS speichern.");
-        return false;
-    }
-    LOG(LOG_INFO, "Standard-Konfiguration als /config.json gespeichert.");
+        JsonObject map2d = doc[F("map2d")];
 
+        // RPM Axis
+        if (map2d.containsKey(F("rpm_axis")) && map2d[F("rpm_axis")].is<JsonArray>())
+        {
+            JsonArray rpmArray = map2d[F("rpm_axis")].as<JsonArray>();
+            for (size_t i = 0; i < rpmArray.size() && i < MAP_SIZE; ++i)
+            {
+                rpm_axis[i] = rpmArray[i].as<int>();
+            }
+        }
+
+        // TPS Axis
+        if (map2d.containsKey(F("tps_axis")) && map2d[F("tps_axis")].is<JsonArray>())
+        {
+            JsonArray tpsArray = map2d[F("tps_axis")].as<JsonArray>();
+            for (size_t i = 0; i < tpsArray.size() && i < MAP_SIZE; ++i)
+            {
+                tps_axis[i] = tpsArray[i].as<int>();
+            }
+        }
+
+        // Angle Data
+        if (map2d.containsKey(F("angle_data")) && map2d[F("angle_data")].is<JsonArray>())
+        {
+            JsonArray dataArray = map2d[F("angle_data")].as<JsonArray>();
+            for (size_t i = 0; i < dataArray.size() && i < MAP_SIZE; ++i)
+            {
+                JsonArray row = dataArray[i].as<JsonArray>();
+                for (size_t j = 0; j < row.size() && j < MAP_SIZE; ++j)
+                {
+                    angle_data[i][j] = row[j].as<int>();
+                }
+            }
+        }
+    }
+
+    LOG(LOG_INFO, "Konfiguration aus Datei geladen. Heap: %d Bytes", ESP.getFreeHeap());
     return true;
 }
 
+void setup()
+{
+    Serial.begin(115200);
+    delay(100);
 
-void setup() {
-  Serial.begin(115200); 
-  delay(100);
+    Serial.println(F("\n--- SYSTEM START: Logger Test (115200 Baud) ---"));
+    LOG(LOG_INFO, "Serielle Kommunikation initialisiert.");
 
-  Serial.println(F("\n--- SYSTEM START: Logger Test (115200 Baud) ---")); 
-  LOG(LOG_INFO, "Serielle Kommunikation initialisiert.");
-  
-  // 1. Zündungs-Core initialisieren
-  pinMode(IGNITION_INPUT_PIN, INPUT_PULLUP);
-  pinMode(IGNITION_OUTPUT_PIN, OUTPUT);
-  pinMode(SPEED_INPUT_PIN, INPUT_PULLUP); 
-  digitalWrite(IGNITION_OUTPUT_PIN, LOW);
+    // 1. Zündungs-Core initialisieren
+    pinMode(IGNITION_INPUT_PIN, INPUT_PULLUP);
+    pinMode(IGNITION_OUTPUT_PIN, OUTPUT);
+    pinMode(SPEED_INPUT_PIN, INPUT_PULLUP);
+    digitalWrite(IGNITION_OUTPUT_PIN, LOW);
 
-  // Setze den Timer und die Interrupts
-  timer1_disable(); 
-  attachInterrupt(digitalPinToInterrupt(IGNITION_INPUT_PIN), handleIgnitionPulse, RISING);
-  attachInterrupt(digitalPinToInterrupt(SPEED_INPUT_PIN), handleSpeedPulse, RISING); 
+    // Setze den Timer und die Interrupts
+    timer1_disable();
+    attachInterrupt(digitalPinToInterrupt(IGNITION_INPUT_PIN), handleIgnitionPulse, RISING);
+    attachInterrupt(digitalPinToInterrupt(SPEED_INPUT_PIN), handleSpeedPulse, RISING);
 
-  // 2. Initialisiere die schnellen, polymorphen Sensor-Tasks 
-  allSensorTasks.push_back({std::make_unique<TPS_Sensor>(ADC_PIN, 50), 0, SID_TPS_RAW});
-  allSensorTasks.push_back({std::make_unique<Static_Sensor>(0.0f, 50), 0, SID_SPEED}); 
-  allSensorTasks.push_back({std::make_unique<CalibratedAnalog_Sensor>(3.3f, 11.0f, 1000), 0, SID_BATT_V});
-  allSensorTasks.push_back({std::make_unique<TempSensorSim>(1000), 0, SID_TEMP_KOPF}); 
+    // 2. Initialisiere die schnellen, polymorphen Sensor-Tasks
+    allSensorTasks.push_back({std::make_unique<TPS_Sensor>(ADC_PIN, 50), 0, SID_TPS_RAW});
+    allSensorTasks.push_back({std::make_unique<Static_Sensor>(0.0f, 50), 0, SID_SPEED});
+    allSensorTasks.push_back({std::make_unique<CalibratedAnalog_Sensor>(3.3f, 11.0f, 1000), 0, SID_BATT_V});
+    allSensorTasks.push_back({std::make_unique<TempSensorSim>(1000), 0, SID_TEMP_KOPF});
 
-  // 3. Konfiguration und WLAN
-  if (!LittleFS.begin()) { 
-    LOG(LOG_WARN, "LittleFS formatiert."); 
-    LittleFS.format(); 
-  }
-  
-  if (!loadConfig()) {
-    LOG(LOG_ERROR, "Kritischer Konfigurationsfehler beim Boot.");
-  }
+    // 3. Konfiguration und WLAN
+    if (!LittleFS.begin())
+    {
+        LOG(LOG_WARN, "LittleFS formatiert.");
+        LittleFS.format();
+    }
 
-  LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
+    if (!loadConfig())
+    {
+        LOG(LOG_ERROR, "Kritischer Konfigurationsfehler beim Boot.");
+    }
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str()); 
-  LOG(LOG_INFO, "Versuche, mit %s zu verbinden...", wifiSsid.c_str());
+    LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
 
-  unsigned long startTime = millis();
-  const unsigned long TIMEOUT = 15000;
-  while (WiFi.status() != WL_CONNECTED && (millis() - startTime < TIMEOUT)) {
-      delay(100); ESP.wdtFeed(); 
-  }
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    LOG(LOG_INFO, "Versuche, mit %s zu verbinden...", wifiSsid.c_str());
 
-  // --- Start des Haupt-Webserver-Setups ---
-  setup_server_routes(); // Routen registrieren (KEIN server.begin()!)
-  
-  if (WiFi.status() == WL_CONNECTED) {
-      // STA-Modus: Erfolg
-      LOG(LOG_INFO, "✅ Verbunden! IP: %s", WiFi.localIP().toString().c_str());
-      
-      // HINWEIS: server.begin() und setup_ota() werden verzögert in loop() ausgeführt.
-      
-      advanceTicker.attach_ms(50, updateIgnitionParameters); 
-      debugTicker.attach(1, printLoopStatus); 
-      statsTicker.attach_ms(500, calculateLoopStatistics);
-      
-      LOG(LOG_INFO, "System bereit. Heap: %d Bytes", ESP.getFreeHeap());
-  } else {
-      // AP-Modus: Verbindung fehlgeschlagen
-      LOG(LOG_WARN, "Verbindung fehlgeschlagen. Starte AP-Modus.");
-      startApMode = true;
-      
-      WiFi.mode(WIFI_AP);
-      
-      // FIX 1: Explizite AP Konfiguration für stabile Netzwerkschicht
-      WiFi.softAPConfig(apIP, gatewayIP, netMask); 
-      
-      LOG(LOG_INFO, "WiFi Mode auf AP gesetzt. Starte SoftAP."); 
-      WiFi.softAP(apSsid.c_str(), apPassword.c_str()); 
-      
-      LOG(LOG_INFO, "SoftAP gestartet. Konfiguriere HTTP-Routen."); 
-      // Routen wurden bereits oben einmal registriert.
-      
-      // FIX 2: Heap Konsolidierung, bevor der Webserver in loop() startet
-      yield(); 
-      delay(1); 
-      
-      LOG(LOG_INFO, "HTTP-Routen konfiguriert. Lösche Startup-Log-Buffer."); 
-      startupLogBuffer.clear(); 
-      
-      LOG(LOG_INFO, "AP IP: %s | Heap: %d Bytes", 
-          WiFi.softAPIP().toString().c_str(), 
-          ESP.getFreeHeap());
-  }
+    unsigned long startTime = millis();
+    const unsigned long TIMEOUT = 15000;
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTime < TIMEOUT))
+    {
+        delay(100);
+        ESP.wdtFeed();
+    }
+
+    // --- Start des Haupt-Webserver-Setups ---
+    setup_server_routes(); // Routen registrieren (KEIN server.begin()!)
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        // STA-Modus: Erfolg
+        LOG(LOG_INFO, "✅ Verbunden! IP: %s", WiFi.localIP().toString().c_str());
+
+        // HINWEIS: server.begin() und setup_ota() werden verzögert in loop() ausgeführt.
+
+        advanceTicker.attach_ms(50, updateIgnitionParameters);
+        debugTicker.attach(1, printLoopStatus);
+        statsTicker.attach_ms(500, calculateLoopStatistics);
+
+        LOG(LOG_INFO, "System bereit. Heap: %d Bytes", ESP.getFreeHeap());
+    }
+    else
+    {
+        // AP-Modus: Verbindung fehlgeschlagen
+        LOG(LOG_WARN, "Verbindung fehlgeschlagen. Starte AP-Modus.");
+        startApMode = true;
+
+        WiFi.mode(WIFI_AP);
+
+        // FIX 1: Explizite AP Konfiguration für stabile Netzwerkschicht
+        WiFi.softAPConfig(apIP, gatewayIP, netMask);
+
+        LOG(LOG_INFO, "WiFi Mode auf AP gesetzt. Starte SoftAP.");
+        WiFi.softAP(apSsid.c_str(), apPassword.c_str());
+
+        LOG(LOG_INFO, "SoftAP gestartet. Konfiguriere HTTP-Routen.");
+        // Routen wurden bereits oben einmal registriert.
+
+        // FIX 2: Heap Konsolidierung, bevor der Webserver in loop() startet
+        yield();
+        delay(1);
+
+        LOG(LOG_INFO, "HTTP-Routen konfiguriert. Lösche Startup-Log-Buffer.");
+        startupLogBuffer.clear();
+
+        LOG(LOG_INFO, "AP IP: %s | Heap: %d Bytes",
+            WiFi.softAPIP().toString().c_str(),
+            ESP.getFreeHeap());
+    }
 }
 
 // main.cpp (loop() Funktion)

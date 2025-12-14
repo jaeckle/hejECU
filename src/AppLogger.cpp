@@ -1,69 +1,48 @@
-// AppLogger.cpp
-
 #include "AppLogger.h"
-#include <Arduino.h>
-#include <LittleFS.h>
-#include <memory> 
-#include <ESP.h>
+#include "CoreDefs.h"
+#include <stdarg.h>
 
-// Externe Deklarationen, um activeLogLevel und serverStarted zu verwenden
-extern volatile LogLevel activeLogLevel;
-extern bool serverStarted; 
+// Max Logs für den Buffer
+#define MAX_STARTUP_LOGS 25 
 
-// --- WICHTIGE GLOBALE STATUSVARIABLEN (Definitionen) ---
-const size_t MAX_STARTUP_LOGS = 50; 
-std::vector<String> startupLogBuffer;
-const char *LOG_FILENAME = "/critical_log.txt";
+// HINWEIS: Die Definitionen von activeLogLevel und startupLogBuffer
+// wurden nach main.cpp verschoben, um doppelte Definitionen zu vermeiden.
 
-// ZENTRALER LOGGER DEFINITION 
-void app_log(LogLevel level, const char* file, int line, int logLine, const char* format, ...) {
-    if (level < activeLogLevel) return; 
-
-    const char* levelStr = "UNKNOWN";
-    switch (level) {
-        case LOG_DEBUG: levelStr = "DEBUG"; break;
-        case LOG_INFO:  levelStr = "INFO";  break;
-        case LOG_WARN:  levelStr = "WARNUNG"; break;
-        case LOG_ERROR: levelStr = "FEHLER"; break;
+void app_log(LogLevel level, const char* file, int line, int function_ptr, const char* format, ...) {
+    if (level < activeLogLevel) {
+        return;
     }
-    
-    unsigned long timeMs = millis();
-    char logBuffer[160]; 
-    
-    int len = snprintf(logBuffer, sizeof(logBuffer), "[%lu ms] [%s] (%s:%d) ", 
-                       timeMs, levelStr, file, logLine);
 
+    char logBuffer[256];
+    const char* levelStr = "";
+
+    switch (level) {
+        case LOG_ERROR: levelStr = "[FEHLER]"; break;
+        case LOG_WARN:  levelStr = "[WARNUNG]"; break;
+        case LOG_INFO:  levelStr = "[INFO]"; break;
+        case LOG_DEBUG: levelStr = "[DEBUG]"; break;
+        // LOG_NONE wird ignoriert
+        default: break; 
+    }
+
+    // 1. Erstelle den Zeitstempel und den Header (File/Line/Function)
+    unsigned long timestamp = millis();
+    snprintf(logBuffer, sizeof(logBuffer), "[%lu ms] %s (%s:%d) ", 
+             timestamp, levelStr, file, line);
+
+    // 2. Füge die variable Nachricht hinzu
+    size_t len = strlen(logBuffer);
     va_list args;
     va_start(args, format);
     vsnprintf(logBuffer + len, sizeof(logBuffer) - len, format, args);
     va_end(args);
-    
-    Serial.println(logBuffer);
-    
-    if (!serverStarted && startupLogBuffer.size() < MAX_STARTUP_LOGS) {
-        startupLogBuffer.push_back(String(logBuffer)); 
-    }
-}
 
-// IMPLEMENTIERUNG: Loggt kritische Ereignisse ins LittleFS
-void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char* status) {
-    if (!LittleFS.begin()) {
-        LOG(LOG_ERROR, "LittleFS ist nicht bereit, kritisches Log kann nicht geschrieben werden.");
-        return;
+    // 3. Sende an die Serielle Schnittstelle
+    Serial.println(logBuffer);
+
+    // 4. In den Startup-Buffer schreiben, falls der Server noch nicht gestartet ist
+    // startupLogBuffer ist jetzt vom Typ std::vector<String>
+    if (!serverStarted && startupLogBuffer.size() < MAX_STARTUP_LOGS) {
+        startupLogBuffer.push_back(String(logBuffer));
     }
-    
-    File logFile = LittleFS.open(LOG_FILENAME, "a");
-    if (!logFile) {
-        LOG(LOG_ERROR, "Konnte kritisches Log-Datei nicht öffnen/erstellen.");
-        return;
-    }
-    
-    char buffer[128];
-    snprintf(buffer, sizeof(buffer), "[%lu ms] [CRIT] %s - Max Loop: %lu us\n", 
-             timestamp, status, maxDuration);
-             
-    logFile.print(buffer);
-    logFile.close();
-    
-    app_log(LOG_WARN, __FILE__, __LINE__, __LINE__, "Kritisches Event protokolliert: %s", status);
 }

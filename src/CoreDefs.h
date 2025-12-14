@@ -1,14 +1,3 @@
-// CoreDefs.h
-
-#ifndef COREDEFS_H
-#define COREDEFS_H
-
-#include <Arduino.h>
-#include <ESP8266WebServer.h> // Löst das typedef-Problem
-#include <vector>
-#include <memory>
-#include <stdarg.h>
-
 // --- LIZENZ HINWEIS ---
 /*
  * Copyright (c) 2025 "hej und Gemini" (Contributor: jaeckle)
@@ -21,107 +10,100 @@
  * A copy of the license is provided in the LICENSE file in the project root.
  */
 
-// =========================================================
-// 1. TYPEN UND ENUMS
-// =========================================================
+#ifndef COREDEFS_H
+#define COREDEFS_H
 
-enum LogLevel
-{
-    LOG_DEBUG = 0,
-    LOG_INFO = 1,
-    LOG_WARN = 2,
-    LOG_ERROR = 3,
+#include <Arduino.h>
+#include <ESP8266WiFi.h> 
+#include <ESP8266WebServer.h>
+#include <vector> // Neu hinzugefügt
+#include <string> // Neu hinzugefügt
+
+// ************************************************************
+// 1. SYSTEMKONSTANTEN
+// ************************************************************
+
+#define CORE_VERSION "0.0.100" 
+
+#define IGNITION_INPUT_PIN D5
+#define IGNITION_OUTPUT_PIN D6
+#define SPEED_INPUT_PIN D7
+#define ADC_PIN A0
+
+#define WEB_HANDLE_INTERVAL 50   // ms
+#define OTA_HANDLE_INTERVAL 1000 // ms
+
+#define MAP_SIZE 8 
+
+// ************************************************************
+// 2. TYP-DEFINITIONEN (ENUMS & STRUCTS)
+// ************************************************************
+
+enum LogLevel {
+    LOG_NONE = 0,
+    LOG_ERROR,
+    LOG_WARN,
+    LOG_INFO,
+    LOG_DEBUG
 };
 
-// NEUE 2D MAP STRUKTUR FÜR BILINEARE INTERPOLATION
-struct IgnitionMap2D
-{
-    std::vector<int> rpm_axis;                // Die X-Achse (z.B. 0, 1000, 2000, ...)
-    std::vector<int> tps_axis;                // Die Y-Achse (z.B. 0, 256, 512, 1023)
-    std::vector<std::vector<int>> angle_data; // Die eigentlichen Winkelwerte [tps][rpm]
+enum SensorID {
+    SID_RPM = 0,
+    SID_SPEED,
+    SID_TPS_RAW,
+    SID_TPS_CAL,
+    SID_BATT_V,
+    SID_TEMP_KOPF
+    // HINWEIS: Fehlende IDs wie SID_TEMP_LUFT, SID_FEUCHTIGKEIT, etc. müssen hier ergänzt werden.
 };
 
-struct RpmConfig
-{
-    int pulses_per_revolution;
-    bool ignition_active;
-    int input_pin;
+struct RpmConfig {
+    int pulses_per_revolution; 
+    int max_rpm;               
 };
 
-struct IgnitionTimingConfig
-{
-    int trigger_offset_deg;
-    float tdc_offset_ms;
+struct SpeedConfig {
+    int sprocket_teeth;
+    int wheel_circumference_mm;
 };
 
-struct IgnitionCoilConfig
-{
-    float primary_resistance_ohm;
-    float external_resistance_ohm;
-    float primary_inductance_mH;
-    float target_current_A;
-    float fixed_dwell_ms;
-};
+// HINWEIS: Fehlende Strukturen wie IgnitionTimingConfig und IgnitionCoilConfig müssen hier ergänzt werden.
 
-// NEUE STRUCT HINZUGEFÜGT
-struct SpeedConfig
-{
-    int sprocket_teeth;         // Zähne des Ritzels
-    int wheel_circumference_mm; // Umfang des Rades in mm
-};
+// ************************************************************
+// 3. GLOBALE VARIABLEN (EXTERN DEKLARATIONEN)
+// ************************************************************
 
-// =========================================================
-// 2. EXTERN DEKLARIERTE GLOBALE VARIABLEN
-// =========================================================
+// --- System und Konfiguration ---
+extern LogLevel activeLogLevel;
+extern std::vector<String> startupLogBuffer; // Typ auf Vector korrigiert
+extern bool startApMode;
+extern bool serverStarted;
 
-extern ESP8266WebServer server;
-extern volatile LogLevel activeLogLevel;
+// --- WLAN / Netzwerk ---
 extern String wifiSsid;
 extern String wifiPassword;
 extern String apSsid;
 extern String apPassword;
-extern bool startApMode;
-extern bool serverStarted;
-extern volatile unsigned long max_loop_duration_us;
-extern volatile bool is_critical_latency_active;
-extern volatile unsigned long last_critical_max_duration_us;
-extern volatile unsigned long last_critical_timestamp_ms;
 
-extern struct RpmConfig rpmConfig;
-extern struct IgnitionTimingConfig timingConfig;
-extern struct IgnitionCoilConfig coilConfig;
-extern struct SpeedConfig speedConfig;
+extern IPAddress apIP;      
+extern IPAddress netMask;   
+extern IPAddress gatewayIP; 
 
-extern IgnitionMap2D ignitionMap2D;
+// --- Core Konfiguration ---
+extern RpmConfig rpmConfig;
+extern SpeedConfig speedConfig;
 
-// Extern Deklarationen für Netzwerkkonfiguration (Definition erfolgt in main.cpp)
-extern IPAddress apIP;
-extern IPAddress netMask;
-extern IPAddress gatewayIP;
+// --- Zündwinkel-Kennfeld-Daten ---
+extern int rpm_axis[MAP_SIZE];     
+extern int tps_axis[MAP_SIZE];     
+extern int angle_data[MAP_SIZE][MAP_SIZE];
 
-// =========================================================
-// 3. EXTERN DEKLARIERTE FUNKTIONEN
-// =========================================================
+// --- Laufzeitwerte (z.B. für handleRoot) ---
+extern unsigned int rpm;
+extern float tps;
+extern float batteryVoltage;
 
-// Getter (für sicheren Zugriff auf volatile Daten)
-extern unsigned long getIgnitionPeriodSafe();
-extern int getIgnitionRpmSafe();
-extern unsigned long getAdvanceMicrosSafe();
-extern float getSpeedStateSafe();
-
-// SENSOR GETTER
-extern float getSensorTpsRawSafe();
-extern float getSensorBattVSafe();
-extern float getSensorTempKopfSafe();
-extern float getSensorSpeedSafe();
-
-// Helfer
-extern bool saveConfig();
-extern bool loadDataFromJson(const char *jsonString);
-extern const char *FALLBACK_CURVE_JSON;
-extern int pinNameToCode(String pinName);
-extern void setPinState(int pinCode, bool targetState);
-extern void setup_server_routes();
-extern void setup_ota();
+// --- Webserver Instanz ---
+extern ESP8266WebServer server;
 
 #endif // COREDEFS_H
