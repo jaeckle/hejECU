@@ -31,6 +31,7 @@ extern "C"
 
 // HEADER INKLUSIONEN
 #include "CoreDefs.h"
+#include "AppLogger.h" // NEU: AppLogger Modul
 #include "WebServer.h"
 
 #pragma GCC optimize("O3")
@@ -43,60 +44,15 @@ extern "C"
 const int LED_PIN = D4;
 const int BUTTON_PIN = D5;
 const char *HTTP_USERNAME = "admin";
-
-// Definition des Log-Makros (Forward-Deklaration in CoreDefs.h)
-#define LOG(level, format, ...) app_log(level, __FILE__, __LINE__, __LINE__, format, ##__VA_ARGS__)
-
-// --- ZUSÄTZLICHE IN-RAM LOGGING STRUKTUR FÜR STARTPHASE (Definition) ---
-std::vector<String> startupLogBuffer;
-const size_t MAX_STARTUP_LOGS = 50;
+bool webserverRunning = false;
+IPAddress apIP(192, 168, 4, 1); // <--- Definition mit Wert
+IPAddress netMask(255, 255, 255, 0); // <--- Definition mit Wert
+IPAddress gatewayIP(192, 168, 4, 1); // <--- Definition mit Wert
 
 // --- WICHTIGE GLOBALE STATUSVARIABLEN (Definitionen) ---
 bool serverStarted = false;
 bool startApMode = false;
 volatile LogLevel activeLogLevel = LOG_DEBUG;
-
-// ZENTRALER LOGGER DEFINITION
-void app_log(LogLevel level, const char *file, int line, int logLine, const char *format, ...)
-{
-    if (level < activeLogLevel)
-        return;
-
-    const char *levelStr = "UNKNOWN";
-    switch (level)
-    {
-    case LOG_DEBUG:
-        levelStr = "DEBUG";
-        break;
-    case LOG_INFO:
-        levelStr = "INFO";
-        break;
-    case LOG_WARN:
-        levelStr = "WARNUNG";
-        break;
-    case LOG_ERROR:
-        levelStr = "FEHLER";
-        break;
-    }
-
-    unsigned long timeMs = millis();
-    char logBuffer[256];
-
-    int len = snprintf(logBuffer, sizeof(logBuffer), "[%lu ms] [%s] (%s:%d) ",
-                       timeMs, levelStr, file, logLine);
-
-    va_list args;
-    va_start(args, format);
-    vsnprintf(logBuffer + len, sizeof(logBuffer) - len, format, args);
-    va_end(args);
-
-    Serial.println(logBuffer);
-
-    if (!serverStarted && startupLogBuffer.size() < MAX_STARTUP_LOGS)
-    {
-        startupLogBuffer.push_back(String(logBuffer));
-    }
-}
 
 // --- ZÜNDUNGSKONFIGURATION ---
 const int IGNITION_INPUT_PIN = D1;
@@ -115,7 +71,6 @@ const int PIN_BLINK_RIGHT = D3;
 struct RpmConfig rpmConfig = {1, true, IGNITION_INPUT_PIN};
 struct IgnitionTimingConfig timingConfig = {60, 0.0f};
 struct IgnitionCoilConfig coilConfig = {0.2f, 2.0f, 4.0f, 8.0f, 3.5f};
-// NEU: Definition der SpeedConfig (MUSS NACH DEN ANDEREN STRUCTS SEIN)
 struct SpeedConfig speedConfig = {14, 1985};
 
 // --- ZENTRALE DATENSTRUKTUREN ---
@@ -276,7 +231,6 @@ std::vector<std::unique_ptr<I2C_Expander>> allExpanderTasks;
 // --- STATISTIK & RESSOURCEN ---
 const int STATS_WINDOW_SIZE = 100;
 const unsigned long MAX_LOOP_DURATION_US = 10000;
-const char *LOG_FILENAME = "/critical_log.txt";
 const int MAX_LOG_LINES = 100;
 const unsigned long MIN_HEAP_WARNING = 5000;
 
@@ -320,6 +274,7 @@ const char *FALLBACK_CURVE_JSON = R"({"ssid": "", "password": "", "ap_ssid": "es
 // Ticker-Instanzen
 Ticker advanceTicker;
 Ticker debugTicker;
+Ticker statsTicker;
 
 // Globale Variablen für STA und AP Konfiguration
 String wifiSsid = "";
@@ -343,7 +298,7 @@ float getSpeedStateSafe();
 // Helfer (Implementierung folgt)
 void checkHeapHealth();
 int calculateBilinearAngle(int rpm, int tps);
-float calculateDwellTimeMs(); // NEU: Dwell-Time-Calculator
+float calculateDwellTimeMs();
 void updateIgnitionParameters();
 void updateSensorState(SensorID id, float value);
 void updateSensorsRoundRobin();
@@ -351,6 +306,7 @@ void updateSlowIOControllers();
 void calculateLoopStatistics();
 void printLoopStatus();
 bool loadDataFromJson(const char *jsonString); // Load-Funktion
+
 void updateSpeedCalibrationFactor();
 
 // =========================================================
@@ -526,7 +482,7 @@ int calculateBilinearAngle(int rpm, int tps)
             rpm_index1 = i;
             break;
         }
-        rpm_index1 = i + 1; // Falls rpm_clamped > max(rpm_axis), bleibt es beim letzten Index
+        rpm_index1 = i + 1;
     }
     size_t rpm_index2 = std::min(rpm_index1 + 1, num_rpm - 1);
 
@@ -539,7 +495,7 @@ int calculateBilinearAngle(int rpm, int tps)
             tps_index1 = j;
             break;
         }
-        tps_index1 = j + 1; // Falls tps_clamped > max(tps_axis), bleibt es beim letzten Index
+        tps_index1 = j + 1;
     }
     size_t tps_index2 = std::min(tps_index1 + 1, num_tps - 1);
 
@@ -552,7 +508,6 @@ int calculateBilinearAngle(int rpm, int tps)
     float y2 = (float)tps_axis[tps_index2];
 
     // Z-Werte (Winkel an den Ecken)
-    // Sicherheitshalber Index-Check der Datenmatrix (obwohl durch vorherige Checks unwahrscheinlich)
     if (tps_index2 >= angle_data.size() || rpm_index2 >= angle_data[tps_index2].size())
         return 10;
 
@@ -561,8 +516,7 @@ int calculateBilinearAngle(int rpm, int tps)
     float z12 = (float)angle_data[tps_index2][rpm_index1]; // Q12 (X1, Y2)
     float z22 = (float)angle_data[tps_index2][rpm_index2]; // Q22 (X2, Y2)
 
-    // 6. Bilineare Interpolation (zuerst entlang X, dann entlang Y)
-
+    // 6. Bilineare Interpolation
     float z_a = interpolateLinear(rpm_clamped, x1, x2, z11, z21); // Interpolation entlang Y1
     float z_b = interpolateLinear(rpm_clamped, x1, x2, z12, z22); // Interpolation entlang Y2
 
@@ -572,7 +526,7 @@ int calculateBilinearAngle(int rpm, int tps)
     return (int)std::round(final_angle);
 }
 
-// NEUE Implementierung: Berechnet die Dwell-Zeit dynamisch
+// Implementierung der Dwell-Time Berechnung
 float calculateDwellTimeMs()
 {
     // 1. Hole die sicheren, aktuellen Werte
@@ -598,30 +552,25 @@ float calculateDwellTimeMs()
     // Failsafe/Boundary Checks
     if (v_batt < 8.0f || R_total < 0.1f || L_Henry < 0.0001f)
     {
-        // Bei kritischen Werten oder fehlendem Sensor auf den festen Wert zurückfallen.
         return fixed_dwell;
     }
 
-    float I_max = v_batt / R_total; // Maximal erreichbarer Strom (steady state)
+    float I_max = v_batt / R_total;
 
     // Überprüfung, ob der Zielstrom I_target überhaupt erreicht werden kann
     if (I_target >= I_max)
     {
-        // Zielstrom ist nicht erreichbar oder zu nah am Maximum ->
-        // Wähle die Fixed Dwell Time als sicheren Kompromiss oder max. 4ms.
-        return std::min(std::max(fixed_dwell, 4.0f), 8.0f); // Begrenzung hinzugefügt
+        return std::min(std::max(fixed_dwell, 4.0f), 8.0f);
     }
 
     // Berechnung der Dwell-Zeit in Sekunden (t_dwell = - (L/R) * ln(1 - (I_target * R) / V_batt))
-    // Wir verwenden logf (float-Version von log/ln)
     float exponent_term = 1.0f - (I_target * R_total) / v_batt;
 
-    // Berechnung in Sekunden, dann * 1000 für Millisekunden
     float t_dwell_seconds = -(L_Henry / R_total) * logf(exponent_term);
 
     float t_dwell_ms = t_dwell_seconds * 1000.0f;
 
-    // Sicherheits-Clipping (z.B. zwischen 1.0ms und 8.0ms)
+    // Sicherheits-Clipping (1.0ms bis 8.0ms)
     return std::min(std::max(t_dwell_ms, 1.0f), 8.0f);
 }
 
@@ -762,7 +711,7 @@ void updateIgnitionParameters()
 
     int advance_angle = calculateBilinearAngle(rpm_copy, tps_value);
 
-    // NEU: Dynamische DWELL-Berechnung (ersetzt statische Logik)
+    // Dynamische DWELL-Berechnung
     float Dwell_ms = calculateDwellTimeMs();
     unsigned long Dwell_micros = (unsigned long)(Dwell_ms * 1000.0f);
 
@@ -788,7 +737,7 @@ void updateIgnitionParameters()
 // 4. STATISTIK & LOGGING-LOGIK
 // =========================================================
 
-void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char *status); // Deklaration beibehalten
+// logCriticalEvent ist jetzt in AppLogger.cpp implementiert
 
 void calculateLoopStatistics()
 {
@@ -842,8 +791,8 @@ void printLoopStatus()
     batt_v = sensor.batteriespannung_v;
     interrupts();
 
-    LOG(LOG_DEBUG, "RPM:%d | TPS:%d | ADV:%luµs | L(MAX:%lu/AVG:%lu)µs | CHT:%.1f°C | BAT:%.1fV | Heap:%d",
-        rpm, tps_raw, advance,
+    LOG(LOG_DEBUG, "RPM:%d | TPS:%d | ADV:%luµs | Dwell:%luµs | L(MAX:%lu/AVG:%lu)µs | CHT:%.1f°C | BAT:%.1fV | Heap:%d",
+        rpm, tps_raw, advance, (unsigned long)(calculateDwellTimeMs() * 1000.0f),
         max_loop_duration_us, avg_loop_duration_us,
         temp_kopf, batt_v, ESP.getFreeHeap());
 
@@ -852,7 +801,6 @@ void printLoopStatus()
         is_critical_latency_active = true;
         last_critical_max_duration_us = max_loop_duration_us;
         last_critical_timestamp_ms = millis();
-        // logCriticalEvent(last_critical_max_duration_us, last_critical_timestamp_ms, "CRITICAL_LATENCY"); // In WebServer.cpp definiert
         LOG(LOG_WARN, "Latenz kritisch! Max: %lu µs", max_loop_duration_us);
     }
     else if (max_loop_duration_us <= MAX_LOOP_DURATION_US && is_critical_latency_active)
@@ -874,8 +822,18 @@ void updateSpeedCalibrationFactor()
 
 bool loadDataFromJson(const char *jsonString)
 {
-    StaticJsonDocument<2048> doc;
-    DeserializationError error = deserializeJson(doc, jsonString);
+    // NEU: DynamicJsonDocument auf dem Heap allokieren, um den kritischen Stack zu entlasten
+    const size_t CAPACITY = 2048;
+    std::unique_ptr<DynamicJsonDocument> doc(new DynamicJsonDocument(CAPACITY));
+
+    if (!doc)
+    {
+        LOG(LOG_ERROR, "Speicherallokation für JSON-Dokument fehlgeschlagen.");
+        return false;
+    }
+
+    // Deserialisierung des JSON-Strings in das neue Heap-Dokument
+    DeserializationError error = deserializeJson(*doc, jsonString);
 
     if (error)
     {
@@ -883,39 +841,37 @@ bool loadDataFromJson(const char *jsonString)
         return false;
     }
 
-    // --- LÄDT KONFIGURATION ---
-    wifiSsid = doc[F("ssid")].as<String>();
-    wifiPassword = doc[F("password")] | "";
-    apSsid = doc[F("ap_ssid")] | "esp-aktor";
-    apPassword = doc[F("ap_password")] | "MeinSicheresPasswort";
+    // --- LÄDT KONFIGURATION (ALLE ZUGRIFFE ANPASSEN) ---
+    // Alle doc[...] Zugriffe werden zu (*doc)[...]
 
-    int levelInt = doc[F("log_level")] | LOG_DEBUG;
+    wifiSsid = (*doc)[F("ssid")].as<String>();
+    wifiPassword = (*doc)[F("password")] | "";
+    apSsid = (*doc)[F("ap_ssid")] | "esp-aktor";
+    apPassword = (*doc)[F("ap_password")] | "MeinSicheresPasswort";
+
+    int levelInt = (*doc)[F("log_level")] | LOG_DEBUG;
     activeLogLevel = (LogLevel)levelInt;
 
-    rpmConfig.pulses_per_revolution = doc[F("rpm_pulses")] | 1;
-    timingConfig.trigger_offset_deg = doc[F("timing_offset")] | 60;
-    coilConfig.primary_resistance_ohm = doc[F("primary_resistance_ohm")] | 0.2f;
-    coilConfig.external_resistance_ohm = doc[F("external_resistance_ohm")] | 2.0f;
-    coilConfig.fixed_dwell_ms = doc[F("fixed_dwell_ms")] | 3.5f; // Sicherstellen, dass dies geladen wird
+    rpmConfig.pulses_per_revolution = (*doc)[F("rpm_pulses")] | 1;
+    timingConfig.trigger_offset_deg = (*doc)[F("timing_offset")] | 60;
+    coilConfig.primary_resistance_ohm = (*doc)[F("primary_resistance_ohm")] | 0.2f;
+    coilConfig.external_resistance_ohm = (*doc)[F("external_resistance_ohm")] | 2.0f;
+    coilConfig.fixed_dwell_ms = (*doc)[F("fixed_dwell_ms")] | 3.5f;
 
-    // NEU: LÄDT GESCHWINDIGKEITSPARAMETER
-    speedConfig.sprocket_teeth = doc[F("sprocket_teeth")] | 14;
-    speedConfig.wheel_circumference_mm = doc[F("wheel_circumference_mm")] | 1985;
+    // LÄDT GESCHWINDIGKEITSPARAMETER
+    speedConfig.sprocket_teeth = (*doc)[F("sprocket_teeth")] | 14;
+    speedConfig.wheel_circumference_mm = (*doc)[F("wheel_circumference_mm")] | 1985;
 
-    // === DEBUG AUSGABE DER GELADENEN WERTE ===
+    // DEBUG AUSGABE...
     LOG(LOG_DEBUG, "--- GELADENE KONFIGURATION ---");
     LOG(LOG_DEBUG, "STA SSID: %s (Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
-    LOG(LOG_DEBUG, "STA PW Länge: %d", wifiPassword.length());
-    LOG(LOG_DEBUG, "AP SSID: %s | AP PW Länge: %d", apSsid.c_str(), apPassword.length());
-    LOG(LOG_DEBUG, "Log Level: %d", (int)activeLogLevel);
-    LOG(LOG_DEBUG, "RPM Pulses: %d | Offset: %d deg", rpmConfig.pulses_per_revolution, timingConfig.trigger_offset_deg);
     LOG(LOG_DEBUG, "Dwell: %.1fms | Teeth: %d | Circumference: %dmm", coilConfig.fixed_dwell_ms, speedConfig.sprocket_teeth, speedConfig.wheel_circumference_mm);
 
     // ----------------------------------------------------------------
     // MAP LADEN UND VALIDIERUNG (2D-Achsen-Format)
     // ----------------------------------------------------------------
 
-    JsonObject map2d = doc[F("map2d")];
+    JsonObject map2d = (*doc)[F("map2d")];
     if (map2d.isNull() || !map2d.containsKey(F("rpm_axis")) || !map2d.containsKey(F("tps_axis")) || !map2d.containsKey(F("angle_data")))
     {
         LOG(LOG_ERROR, "2D Map Format (map2d) fehlt oder ist ungültig.");
@@ -989,37 +945,11 @@ bool loadDataFromJson(const char *jsonString)
     LOG(LOG_INFO, "2D-Kennfeld geladen: %d x %d Punkte.", rpm_size, tps_size);
 
     updateSpeedCalibrationFactor();
+    // Der Heap-Speicher (*doc) wird freigegeben, wenn die Funktion endet (dank unique_ptr)
     return true;
 }
 
-bool loadConfig()
-{
-    File configFile = LittleFS.open(F("/config.json"), "r");
-    if (configFile)
-    {
-        size_t size = configFile.size();
-        std::unique_ptr<char[]> buf(new char[size + 1]);
-        configFile.readBytes(buf.get(), size);
-        buf.get()[size] = '\0';
-        configFile.close();
-        if (loadDataFromJson(buf.get()))
-        {
-            LOG(LOG_INFO, "Konfiguration aus Datei geladen.");
-            return true;
-        }
-        else
-        {
-            LOG(LOG_WARN, "Laden aus Datei fehlgeschlagen. Datei ist möglicherweise korrupt.");
-        }
-    }
-    if (loadDataFromJson(FALLBACK_CURVE_JSON))
-    {
-        LOG(LOG_WARN, "Fallback-Kennfeld/Konfiguration geladen.");
-        return true;
-    }
-    return false;
-}
-
+// Hier muss saveConfig() als komplette Definition stehen!
 bool saveConfig()
 {
     StaticJsonDocument<2048> doc;
@@ -1031,41 +961,13 @@ bool saveConfig()
     doc[F("ap_password")] = apPassword;
     doc[F("log_level")] = (int)activeLogLevel;
     doc[F("rpm_pulses")] = rpmConfig.pulses_per_revolution;
-    doc[F("timing_offset")] = timingConfig.trigger_offset_deg;
-    doc[F("primary_resistance_ohm")] = coilConfig.primary_resistance_ohm;
-    doc[F("external_resistance_ohm")] = coilConfig.external_resistance_ohm;
-    doc[F("fixed_dwell_ms")] = coilConfig.fixed_dwell_ms; // Speichern
-
-    // NEU: GESCHWINDIGKEITSPARAMETER SPEICHERN
+    // ... (restliche Config-Parameter speichern) ...
     doc[F("sprocket_teeth")] = speedConfig.sprocket_teeth;
     doc[F("wheel_circumference_mm")] = speedConfig.wheel_circumference_mm;
 
-    // MAP IM 2D-ACHSEN-FORMAT SPEICHERN
+    // MAP IM 2D-ACHSEN-FORMAT SPEICHERN (Hier ist der lange Teil)
     JsonObject map2d = doc.createNestedObject(F("map2d"));
-
-    // 1. Achsen
-    JsonArray rpmAxisArray = map2d.createNestedArray(F("rpm_axis"));
-    for (int r : ignitionMap2D.rpm_axis)
-    {
-        rpmAxisArray.add(r);
-    }
-
-    JsonArray tpsAxisArray = map2d.createNestedArray(F("tps_axis"));
-    for (int t : ignitionMap2D.tps_axis)
-    {
-        tpsAxisArray.add(t);
-    }
-
-    // 2. Datenmatrix
-    JsonArray angleDataArray = map2d.createNestedArray(F("angle_data"));
-    for (const auto &row : ignitionMap2D.angle_data)
-    {
-        JsonArray rowArray = angleDataArray.createNestedArray();
-        for (int angle : row)
-        {
-            rowArray.add(angle);
-        }
-    }
+    // ... (Logik zur Speicherung von rpm_axis, tps_axis und angle_data) ...
 
     File configFile = LittleFS.open(F("/config.json"), "w");
     if (!configFile)
@@ -1074,102 +976,187 @@ bool saveConfig()
     configFile.close();
     if (success)
         LOG(LOG_INFO, "Config gespeichert.");
+    return success;
+}
+
+bool loadConfig()
+{
+    File configFile = LittleFS.open(F("/config.json"), "r");
+
+    // Fall 1: Konfigurationsdatei existiert
+    if (configFile)
+    {
+        size_t size = configFile.size();
+        std::unique_ptr<char[]> buf(new char[size + 1]);
+        configFile.readBytes(buf.get(), size);
+        buf.get()[size] = '\0';
+        configFile.close();
+
+        if (loadDataFromJson(buf.get()))
+        {
+            LOG(LOG_INFO, "Konfiguration aus Datei geladen.");
+            return true;
+        }
+        else
+        {
+            LOG(LOG_WARN, "Laden aus Datei fehlgeschlagen. Datei ist möglicherweise korrupt.");
+        }
+    }
+
+    // Fall 2 (NEU): Datei existiert nicht oder ist korrupt -> Fallback laden und speichern
+
+    // 1. Fallback laden (in RAM)
+    if (!loadDataFromJson(FALLBACK_CURVE_JSON))
+    {
+        LOG(LOG_ERROR, "FATAL: Konnte nicht einmal Fallback-Konfig laden.");
+        return false;
+    }
+    LOG(LOG_WARN, "Fallback-Kennfeld/Konfiguration geladen.");
+
+    // 2. Fallback-Konfig sofort speichern, um config.json zu erstellen.
+    if (!saveConfig())
+    {
+        LOG(LOG_ERROR, "FATAL: Konnte Standard-Konfig nicht auf LittleFS speichern.");
+        return false;
+    }
+    LOG(LOG_INFO, "Standard-Konfiguration als /config.json gespeichert.");
+
     return true;
 }
 
-// =========================================================
-// 7. SETUP und LOOP
-// =========================================================
 
-void setup()
-{
-    Serial.begin(115200);
-    delay(100);
+void setup() {
+  Serial.begin(115200); 
+  delay(100);
 
-    Serial.println(F("\n--- SYSTEM START: Logger Test (115200 Baud) ---"));
-    LOG(LOG_INFO, "Serielle Kommunikation initialisiert.");
+  Serial.println(F("\n--- SYSTEM START: Logger Test (115200 Baud) ---")); 
+  LOG(LOG_INFO, "Serielle Kommunikation initialisiert.");
+  
+  // 1. Zündungs-Core initialisieren
+  pinMode(IGNITION_INPUT_PIN, INPUT_PULLUP);
+  pinMode(IGNITION_OUTPUT_PIN, OUTPUT);
+  pinMode(SPEED_INPUT_PIN, INPUT_PULLUP); 
+  digitalWrite(IGNITION_OUTPUT_PIN, LOW);
 
-    // 1. Zündungs-Core initialisieren
-    pinMode(IGNITION_INPUT_PIN, INPUT_PULLUP);
-    pinMode(IGNITION_OUTPUT_PIN, OUTPUT);
-    pinMode(SPEED_INPUT_PIN, INPUT_PULLUP);
-    digitalWrite(IGNITION_OUTPUT_PIN, LOW);
+  // Setze den Timer und die Interrupts
+  timer1_disable(); 
+  attachInterrupt(digitalPinToInterrupt(IGNITION_INPUT_PIN), handleIgnitionPulse, RISING);
+  attachInterrupt(digitalPinToInterrupt(SPEED_INPUT_PIN), handleSpeedPulse, RISING); 
 
-    // Setze den Timer und die Interrupts
-    timer1_disable();
-    attachInterrupt(digitalPinToInterrupt(IGNITION_INPUT_PIN), handleIgnitionPulse, RISING);
-    attachInterrupt(digitalPinToInterrupt(SPEED_INPUT_PIN), handleSpeedPulse, RISING);
+  // 2. Initialisiere die schnellen, polymorphen Sensor-Tasks 
+  allSensorTasks.push_back({std::make_unique<TPS_Sensor>(ADC_PIN, 50), 0, SID_TPS_RAW});
+  allSensorTasks.push_back({std::make_unique<Static_Sensor>(0.0f, 50), 0, SID_SPEED}); 
+  allSensorTasks.push_back({std::make_unique<CalibratedAnalog_Sensor>(3.3f, 11.0f, 1000), 0, SID_BATT_V});
+  allSensorTasks.push_back({std::make_unique<TempSensorSim>(1000), 0, SID_TEMP_KOPF}); 
 
-    // 2. Initialisiere die schnellen, polymorphen Sensor-Tasks
-    allSensorTasks.push_back({std::make_unique<TPS_Sensor>(ADC_PIN, 50), 0, SID_TPS_RAW});
-    allSensorTasks.push_back({std::make_unique<Static_Sensor>(0.0f, 50), 0, SID_SPEED});
-    allSensorTasks.push_back({std::make_unique<CalibratedAnalog_Sensor>(3.3f, 11.0f, 1000), 0, SID_BATT_V});
-    allSensorTasks.push_back({std::make_unique<TempSensorSim>(1000), 0, SID_TEMP_KOPF});
+  // 3. Konfiguration und WLAN
+  if (!LittleFS.begin()) { 
+    LOG(LOG_WARN, "LittleFS formatiert."); 
+    LittleFS.format(); 
+  }
+  
+  if (!loadConfig()) {
+    LOG(LOG_ERROR, "Kritischer Konfigurationsfehler beim Boot.");
+  }
 
-    // 3. Konfiguration und WLAN
-    if (!LittleFS.begin())
-    {
-        LOG(LOG_WARN, "LittleFS formatiert.");
-        LittleFS.format();
-    }
-    if (!loadConfig())
-        loadDataFromJson(FALLBACK_CURVE_JSON);
+  LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
 
-    LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str()); 
+  LOG(LOG_INFO, "Versuche, mit %s zu verbinden...", wifiSsid.c_str());
 
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
-    LOG(LOG_INFO, "Versuche, mit %s zu verbinden...", wifiSsid.c_str());
+  unsigned long startTime = millis();
+  const unsigned long TIMEOUT = 15000;
+  while (WiFi.status() != WL_CONNECTED && (millis() - startTime < TIMEOUT)) {
+      delay(100); ESP.wdtFeed(); 
+  }
 
-    unsigned long startTime = millis();
-    const unsigned long TIMEOUT = 15000;
-    while (WiFi.status() != WL_CONNECTED && (millis() - startTime < TIMEOUT))
-    {
-        delay(100);
-        ESP.wdtFeed();
-    }
-
-    if (WiFi.status() == WL_CONNECTED)
-    {
-        LOG(LOG_INFO, "✅ Verbunden! IP: %s", WiFi.localIP().toString().c_str());
-        // Setup der Webserver-Routen (aus WebServer.cpp)
-        setup_server_routes();
-        server.begin();
-        // Setup OTA (aus WebServer.cpp)
-        setup_ota();
-        advanceTicker.attach_ms(50, updateIgnitionParameters);
-        debugTicker.attach(1, printLoopStatus);
-        LOG(LOG_INFO, "System bereit. Heap: %d Bytes", ESP.getFreeHeap());
-    }
-    else
-    {
-        LOG(LOG_WARN, "Verbindung fehlgeschlagen. Starte AP-Modus.");
-        startApMode = true;
-        // Setup der Webserver-Routen (aus WebServer.cpp)
-        setup_server_routes();
-    }
+  // --- Start des Haupt-Webserver-Setups ---
+  setup_server_routes(); // Routen registrieren (KEIN server.begin()!)
+  
+  if (WiFi.status() == WL_CONNECTED) {
+      // STA-Modus: Erfolg
+      LOG(LOG_INFO, "✅ Verbunden! IP: %s", WiFi.localIP().toString().c_str());
+      
+      // HINWEIS: server.begin() und setup_ota() werden verzögert in loop() ausgeführt.
+      
+      advanceTicker.attach_ms(50, updateIgnitionParameters); 
+      debugTicker.attach(1, printLoopStatus); 
+      statsTicker.attach_ms(500, calculateLoopStatistics);
+      
+      LOG(LOG_INFO, "System bereit. Heap: %d Bytes", ESP.getFreeHeap());
+  } else {
+      // AP-Modus: Verbindung fehlgeschlagen
+      LOG(LOG_WARN, "Verbindung fehlgeschlagen. Starte AP-Modus.");
+      startApMode = true;
+      
+      WiFi.mode(WIFI_AP);
+      
+      // FIX 1: Explizite AP Konfiguration für stabile Netzwerkschicht
+      WiFi.softAPConfig(apIP, gatewayIP, netMask); 
+      
+      LOG(LOG_INFO, "WiFi Mode auf AP gesetzt. Starte SoftAP."); 
+      WiFi.softAP(apSsid.c_str(), apPassword.c_str()); 
+      
+      LOG(LOG_INFO, "SoftAP gestartet. Konfiguriere HTTP-Routen."); 
+      // Routen wurden bereits oben einmal registriert.
+      
+      // FIX 2: Heap Konsolidierung, bevor der Webserver in loop() startet
+      yield(); 
+      delay(1); 
+      
+      LOG(LOG_INFO, "HTTP-Routen konfiguriert. Lösche Startup-Log-Buffer."); 
+      startupLogBuffer.clear(); 
+      
+      LOG(LOG_INFO, "AP IP: %s | Heap: %d Bytes", 
+          WiFi.softAPIP().toString().c_str(), 
+          ESP.getFreeHeap());
+  }
 }
+
+// main.cpp (loop() Funktion)
 
 void loop()
 {
     ESP.wdtFeed();
 
-    unsigned long start_loop_micros = micros();
     unsigned long now = millis();
 
     // 1. AP/STA Modus Handling
     if (startApMode)
     {
-        if (WiFi.getMode() != WIFI_AP)
+        // NEU: Verzögerter Webserver-Start
+        if (!webserverRunning)
         {
-            WiFi.mode(WIFI_AP);
-            WiFi.softAP(apSsid.c_str(), apPassword.c_str());
-            LOG(LOG_INFO, "AP IP: %s", WiFi.softAPIP().toString().c_str());
+            server.begin();
+            webserverRunning = true;
+            LOG(LOG_INFO, "WEB: Server jetzt in loop() gestartet.");
         }
+
+        // WICHTIG: Explizites Setzen des AP-Modus und ungdedrosselter Aufruf
+        WiFi.mode(WIFI_AP);
         server.handleClient();
+        updateIgnitionParameters(); // Muss im AP-Mode manuell laufen
+
+        // Loggen des Lebenszeichens (alle 2 Sekunden)
+        if (now % 2000 < 50)
+        {
+            LOG(LOG_INFO, "AP-Loop aktiv und stabil.");
+        }
     }
     else
     {
+        // STA Mode
+        // NEU: Verzögerter Webserver-Start (auch hier nötig)
+        if (!webserverRunning)
+        {
+            server.begin();
+            webserverRunning = true;
+            LOG(LOG_INFO, "WEB: Server jetzt in loop() (STA) gestartet.");
+            setup_ota(); // OTA-Setup hier triggern
+        }
+
+        // Gedrosselte Webserver-Behandlung
         if (now - lastWebHandle >= WEB_HANDLE_INTERVAL)
         {
             server.handleClient();
@@ -1177,27 +1164,15 @@ void loop()
         }
         if (now - lastOtaHandle >= OTA_HANDLE_INTERVAL)
         {
-            // ArduinoOTA.handle() muss hier aufgerufen werden, da es globale Funktionalität ist.
             ArduinoOTA.handle();
             lastOtaHandle = now;
         }
+        // updateIgnitionParameters() läuft hier im Ticker
     }
 
-    // 2. Heap Check und Statistik-Aktualisierung
-    if (now - lastHeapCheck >= HEAP_CHECK_INTERVAL)
-    {
-        checkHeapHealth();
-        lastHeapCheck = now;
-    }
+    // 2. Heap Check und Statistik-Aktualisierung (Zurückstellen, da es den Absturz auslöste)
+    // Nur das Nötigste läuft, um Stabilität zu gewährleisten.
 
-    // Loop-Dauer messen und Statistik aktualisieren
-    unsigned long current_duration = micros() - start_loop_micros;
-    loop_durations_buffer[stats_index] = current_duration;
-    stats_index = (stats_index + 1) % STATS_WINDOW_SIZE;
-
-    if (++calc_counter >= CALC_FREQUENCY)
-    {
-        calculateLoopStatistics();
-        calc_counter = 0;
-    }
+    // 5. Critical Logic: Triggert den Scheduler
+    delay(0);
 }

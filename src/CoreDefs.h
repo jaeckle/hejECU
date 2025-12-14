@@ -4,6 +4,7 @@
 #define COREDEFS_H
 
 #include <Arduino.h>
+#include <ESP8266WebServer.h> // Löst das typedef-Problem
 #include <vector>
 #include <memory>
 #include <stdarg.h>
@@ -62,7 +63,7 @@ struct IgnitionCoilConfig
     float fixed_dwell_ms;
 };
 
-// NEUE STRUCT HINZUGEFÜGT (JETZT AUF DER KORREKTEN POSITION)
+// NEUE STRUCT HINZUGEFÜGT
 struct SpeedConfig
 {
     int sprocket_teeth;         // Zähne des Ritzels
@@ -80,8 +81,6 @@ extern String wifiPassword;
 extern String apSsid;
 extern String apPassword;
 extern bool startApMode;
-extern const char *LOG_FILENAME;
-extern std::vector<String> startupLogBuffer;
 extern bool serverStarted;
 extern volatile unsigned long max_loop_duration_us;
 extern volatile bool is_critical_latency_active;
@@ -91,16 +90,18 @@ extern volatile unsigned long last_critical_timestamp_ms;
 extern struct RpmConfig rpmConfig;
 extern struct IgnitionTimingConfig timingConfig;
 extern struct IgnitionCoilConfig coilConfig;
-extern struct SpeedConfig speedConfig; // NEU: SpeedConfig extern deklariert
+extern struct SpeedConfig speedConfig;
 
 extern IgnitionMap2D ignitionMap2D;
+
+// Extern Deklarationen für Netzwerkkonfiguration (Definition erfolgt in main.cpp)
+extern IPAddress apIP;
+extern IPAddress netMask;
+extern IPAddress gatewayIP;
 
 // =========================================================
 // 3. EXTERN DEKLARIERTE FUNKTIONEN
 // =========================================================
-
-// Logger
-extern void app_log(LogLevel level, const char *file, int line, int logLine, const char *format, ...);
 
 // Getter (für sicheren Zugriff auf volatile Daten)
 extern unsigned long getIgnitionPeriodSafe();
@@ -122,6 +123,5 @@ extern int pinNameToCode(String pinName);
 extern void setPinState(int pinCode, bool targetState);
 extern void setup_server_routes();
 extern void setup_ota();
-extern void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char *status);
 
 #endif // COREDEFS_H
