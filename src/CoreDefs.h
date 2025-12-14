@@ -3,6 +3,7 @@
 #ifndef COREDEFS_H
 #define COREDEFS_H
 
+#include <ESP8266WebServer.h>
 #include <Arduino.h>
 #include <vector>
 #include <memory>

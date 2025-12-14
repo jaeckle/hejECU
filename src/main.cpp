@@ -23,6 +23,7 @@
 #include <ESP8266mDNS.h>
 #include <ESP8266WebServer.h>
 #include <ArduinoOTA.h>
+#include "AppLogger.h"
 
 extern "C"
 {
@@ -45,7 +46,7 @@ const int BUTTON_PIN = D5;
 const char *HTTP_USERNAME = "admin";
 
 // Definition des Log-Makros (Forward-Deklaration in CoreDefs.h)
-#define LOG(level, format, ...) app_log(level, __FILE__, __LINE__, __LINE__, format, ##__VA_ARGS__)
+// #define LOG(level, format, ...) app_log(level, __FILE__, __LINE__, __LINE__, format, ##__VA_ARGS__)
 
 // --- ZUSÄTZLICHE IN-RAM LOGGING STRUKTUR FÜR STARTPHASE (Definition) ---
 std::vector<String> startupLogBuffer;
@@ -55,48 +56,6 @@ const size_t MAX_STARTUP_LOGS = 50;
 bool serverStarted = false;
 bool startApMode = false;
 volatile LogLevel activeLogLevel = LOG_DEBUG;
-
-// ZENTRALER LOGGER DEFINITION
-void app_log(LogLevel level, const char *file, int line, int logLine, const char *format, ...)
-{
-    if (level < activeLogLevel)
-        return;
-
-    const char *levelStr = "UNKNOWN";
-    switch (level)
-    {
-    case LOG_DEBUG:
-        levelStr = "DEBUG";
-        break;
-    case LOG_INFO:
-        levelStr = "INFO";
-        break;
-    case LOG_WARN:
-        levelStr = "WARNUNG";
-        break;
-    case LOG_ERROR:
-        levelStr = "FEHLER";
-        break;
-    }
-
-    unsigned long timeMs = millis();
-    char logBuffer[256];
-
-    int len = snprintf(logBuffer, sizeof(logBuffer), "[%lu ms] [%s] (%s:%d) ",
-                       timeMs, levelStr, file, logLine);
-
-    va_list args;
-    va_start(args, format);
-    vsnprintf(logBuffer + len, sizeof(logBuffer) - len, format, args);
-    va_end(args);
-
-    Serial.println(logBuffer);
-
-    if (!serverStarted && startupLogBuffer.size() < MAX_STARTUP_LOGS)
-    {
-        startupLogBuffer.push_back(String(logBuffer));
-    }
-}
 
 // --- ZÜNDUNGSKONFIGURATION ---
 const int IGNITION_INPUT_PIN = D1;
@@ -877,6 +836,9 @@ bool loadDataFromJson(const char *jsonString)
     StaticJsonDocument<2048> doc;
     DeserializationError error = deserializeJson(doc, jsonString);
 
+    // WDT-Fix 1: Nach CPU-intensiver JSON-Deserialisierung
+    yield();
+
     if (error)
     {
         LOG(LOG_ERROR, "JSON Fehlercode: %s", error.c_str());
@@ -1107,16 +1069,22 @@ void setup()
     allSensorTasks.push_back({std::make_unique<TempSensorSim>(1000), 0, SID_TEMP_KOPF});
 
     // 3. Konfiguration und WLAN
+    LOG(LOG_DEBUG, "WDT Test 1: Starte LittleFS.");
+
     if (!LittleFS.begin())
     {
         LOG(LOG_WARN, "LittleFS formatiert.");
         LittleFS.format();
+        LOG(LOG_WARN, "WDT Test 2: LittleFS formatiert. Starte LoadConfig.");
     }
+    LOG(LOG_DEBUG, "WDT Test 3: Lade Konfiguration.");
     if (!loadConfig())
-        loadDataFromJson(FALLBACK_CURVE_JSON);
-
+    {
+        // loadDataFromJson(FALLBACK_CURVE_JSON);
+        LOG(LOG_ERROR, "WDT Test 4: Konfigurationsfehler beim Boot.");
+    }
     LOG(LOG_INFO, "WLAN Setup: Verbinde mit '%s' (PW-Länge: %d)", wifiSsid.c_str(), wifiSsid.length());
-
+    LOG(LOG_DEBUG, "WDT Test 5: Starte WLAN-Verbindungsversuch.");
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
     LOG(LOG_INFO, "Versuche, mit %s zu verbinden...", wifiSsid.c_str());
@@ -1125,7 +1093,7 @@ void setup()
     const unsigned long TIMEOUT = 15000;
     while (WiFi.status() != WL_CONNECTED && (millis() - startTime < TIMEOUT))
     {
-        delay(100);
+        // delay(100);
         ESP.wdtFeed();
     }
 
