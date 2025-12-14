@@ -57,12 +57,7 @@ int angle_data[MAP_SIZE][MAP_SIZE];
 bool serverStarted = false;
 bool startApMode = false;
 volatile LogLevel activeLogLevel = LOG_DEBUG;
-
-// --- ZÜNDUNGSKONFIGURATION ---
-const int IGNITION_INPUT_PIN = D1;
-const int IGNITION_OUTPUT_PIN = D2;
-const int ADC_PIN = A0;
-const int SPEED_INPUT_PIN = D0;
+std::vector<String> startupLogBuffer;
 
 // PIN PLATZHALTER
 const int PIN_LIGHT_IN = D5;
@@ -72,10 +67,27 @@ const int PIN_BLINK_LEFT = D4;
 const int PIN_BLINK_RIGHT = D3;
 
 // --- Konfigurations-Structs (Definitionen) ---
-struct RpmConfig rpmConfig = {1, true, IGNITION_INPUT_PIN};
+
+// Beispiel: Die korrigierte RpmConfig Initialisierung (Aktion 35)
+RpmConfig rpmConfig = {2, 10000}; // {pulses_per_revolution, max_rpm}
 struct IgnitionTimingConfig timingConfig = {60, 0.0f};
 struct IgnitionCoilConfig coilConfig = {0.2f, 2.0f, 4.0f, 8.0f, 3.5f};
 struct SpeedConfig speedConfig = {14, 1985};
+
+// --- Logger Definitionen (Aktion 38) ---
+// LogLevel activeLogLevel wird in der Konfigurationsfunktion überschrieben
+LogLevel activeLogLevel = LOG_DEBUG; 
+std::vector<String> startupLogBuffer; 
+
+// --- Zündwinkel-Kennfeld-Daten (Definitionen der extern Arrays) ---
+int rpm_axis[MAP_SIZE];
+int tps_axis[MAP_SIZE];
+int angle_data[MAP_SIZE][MAP_SIZE];
+
+// --- Weitere Konfigurationen (Initialisierung der structs) ---
+// HINWEIS: Prüfen Sie Ihre CoreDefs.h auf die exakte Struktur. 
+// Ich nehme an, dass die structs IgnitionTimingConfig und IgnitionCoilConfig fehlen.
+// Diese müssen Sie entweder in CoreDefs.h definieren oder die Initialisierung entfernen.
 
 // --- ZENTRALE DATENSTRUKTUREN ---
 struct IgnitionState
@@ -251,8 +263,6 @@ volatile bool is_critical_latency_active = false;
 unsigned long lastWebHandle = 0;
 unsigned long lastOtaHandle = 0;
 unsigned long lastHeapCheck = 0;
-const unsigned long WEB_HANDLE_INTERVAL = 200;
-const unsigned long OTA_HANDLE_INTERVAL = 1000;
 const unsigned long HEAP_CHECK_INTERVAL = 5000;
 
 volatile unsigned long server_start_delay_ms = 30000;
