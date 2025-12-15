@@ -1,51 +1,53 @@
-/*
- * Copyright (c) 2025 "hej und Gemini" (Contributor: [Ihr GitHub-Username])
- *
- * This software is licensed under the GNU General Public License v3.0 (GPL-3.0).
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation.
- *
- * A copy of the license is provided in the LICENSE file in the project root.
- */
-
-#ifndef WEBSERVER_H
-#define WEBSERVER_H
-
+// src/WebServer.h (Reiner Router/Handler Deklaration)
+#pragma once
+#include <Arduino.h>
 #include <ESP8266WebServer.h>
-#include "CoreDefs.h" 
+#include "WiFiManager.h" // NEU: Für die korrekte Deklaration von apPassword etc.
+#include "AppLogger.h"
 
-// Deklarationen aus main.cpp (für externe Verwendung)
+// Externe Deklaration der Webserver-Instanz
 extern ESP8266WebServer server;
-extern volatile LogLevel activeLogLevel;
-extern String apPassword; // Wird für isAuthorized benötigt
-extern bool startApMode; 
-extern const char *LOG_FILENAME;
-extern std::vector<String> startupLogBuffer;
-extern bool serverStarted;
 
-// Externe Funktionen (aus main.cpp)
-extern bool saveConfig();
-extern void app_log(LogLevel level, const char* file, int line, int logLine, const char* format, ...);
+// =========================================================
+// 1. HAUPT-FUNKTIONEN
+// =========================================================
 
-// Log-Makro-Deklaration für WebServer.cpp
-#define LOG_WEB(level, format, ...) app_log(level, "WebServer.cpp", __LINE__, __LINE__, format, ##__VA_ARGS__) 
-
-// --- Funktions-Deklarationen ---
 void setup_server_routes();
 void setup_ota();
-bool isAuthorized();
+bool isAuthorized(String user, String pass);
 
-// Die kritische Log-Funktion, die in LittleFS speichert
-void logCriticalEvent(unsigned long maxDuration, unsigned long timestamp, const char* status);
+// =========================================================
+// 2. HANDLER-DEKLARATIONEN (HTTP-Endpunkte)
+// =========================================================
 
-// Handler
+// Haupt-Handler
 void handleRoot();
-void handleRestart();
 void handleNotFound();
+void handleLogin();
+void handleLogout();
+void handleSystemStatus();
 
-void handleViewLog(); 
-void handleClearLog(); 
-void handleSetLogLevel(); // NEU: Kombinierter POST-Handler für Log-Level
+// Konfigurations-Handler
+void handleConfig();
+void handleSaveConfig();
+void handleRpmConfig();
+void handleSaveRpmConfig();
+void handleMapConfig();
+void handleSaveMapConfig();
 
-#endif // WEBSERVER_H
+// Sensoren-Handler
+void handleSensorConfig();
+void handleSaveSensorConfig();
+
+// =========================================================
+// 3. HTML HILFSFUNKTIONEN (Delegation)
+//    Diese Funktionen müssen in WebServer.cpp LEER oder MINIMAL implementiert sein.
+//    Die eigentliche Generierung erfolgt in den Managern.
+// =========================================================
+
+String getHeader(String title);
+String getFooter();
+String getNavigation();
+String generateStatusTable();
+String generateIgnitionConfigForm();
+// ... (alle anderen generierenden Funktionen)
