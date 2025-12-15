@@ -1,7 +1,12 @@
 // src/SystemStats.cpp
 #include "SystemStats.h"
+#include <Ticker.h>
 #include "AppLogger.h"
 #include <ESP.h>
+
+// Definition der extern deklarierten Ticker (Aktion 145.3)
+Ticker advanceTicker;
+Ticker debugTicker;
 
 // --- GLOBALE DEFINITIONEN ---
 const int STATS_WINDOW_SIZE = 100;

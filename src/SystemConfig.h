@@ -1,5 +1,7 @@
 // src/SystemConfig.h
 #pragma once
+
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "CoreDefs.h" // Für LogLevel
@@ -10,12 +12,22 @@
 
 // Das LogLevel ist eine der wenigen Variablen, die das gesamte System steuert
 extern volatile LogLevel activeLogLevel;
+bool loadWiFiConfig(JsonVariant json);
 
 // =========================================================
 // 2. FUNKTIONSDEKLARATIONEN (I/O Steuerung)
 // =========================================================
 
-// Haupt-I/O Funktionen (von main.cpp aufgerufen)
+// Definition der Hauptkonfigurationsstruktur
+struct SystemConfig_t {
+    char wifi_ssid[32];
+    char wifi_password[64];
+    // ... andere globale Konfigurationen
+};
+
+extern SystemConfig_t systemConfig; // Die externe Instanz
+
+// Funktionsdeklarationen
 bool loadConfig();
 bool saveConfig();
 bool loadDataFromJson(const char *jsonString);

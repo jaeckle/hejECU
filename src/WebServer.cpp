@@ -39,6 +39,13 @@ String getNavigation() {
 String generateStatusTable() {
     return F("<h1>Status Platzhalter</h1>");
 }
+
+void setServerStarted(bool state) {
+    // Hier sollte die Logik stehen, die den Serverstatus verwaltet
+    // Fürs Erste nur ein Rumpf, um den Linker zufriedenzustellen.
+    serverStarted = state;
+}
+
 // ... (Alle anderen Generate/Get Funktionen sind leer) ...
 
 // =========================================================

@@ -16,6 +16,8 @@ void setup_server_routes();
 void setup_ota();
 bool isAuthorized(String user, String pass);
 
+void setServerStarted(bool state);
+
 // =========================================================
 // 2. HANDLER-DEKLARATIONEN (HTTP-Endpunkte)
 // =========================================================

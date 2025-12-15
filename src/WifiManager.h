@@ -1,37 +1,24 @@
-// src/WiFiManager.h
+// src/WiFiManager.h (KORREKTUREN)
 #pragma once
-#include <Arduino.h>
+
 #include <ESP8266WiFi.h>
-#include <ArduinoJson.h> // Für die Load/Save Funktionen
-#include "AppLogger.h"   // Für LOG Level
+#include <ESP8266WebServer.h>
 
-// =========================================================
-// 1. GLOBALE VARIABLEN (Deklaration: Extern)
-// WiFiManager besitzt jetzt diese Konfiguration
-// =========================================================
+// Externe Variable, die den AP-Modus steuert (in WiFiManager.cpp definiert)
+extern bool startApMode;
 
-// WLAN Anmeldedaten (als char[] zur Vermeidung von Heap-Fragmentierung)
-extern char wifiSsid[];
-extern char wifiPassword[];
-extern char apSsid[];
-extern char apPassword[];
+/**
+ * @brief Versucht, eine Verbindung zum konfigurierten STA-Netzwerk herzustellen.
+ * @return true, wenn die Verbindung erfolgreich war (STA Mode); false sonst.
+ */
+bool setupWiFi(); // <-- HIER: void ZU bool GEÄNDERT
 
-// WLAN IP-Konfiguration (konstante Adressen)
-extern const IPAddress apIP;
-extern const IPAddress netMask;
-extern const IPAddress gatewayIP;
+/**
+ * @brief Verwaltet den WLAN-Zustand (STA/AP). Muss periodisch im Loop aufgerufen werden.
+ */
+void handleWiFiMode(); // <-- HIER: HINZUGEFÜGT
 
-
-// =========================================================
-// 2. FUNKTIONSDEKLARATIONEN
-// =========================================================
-
-// Core Setup Funktionen
-void setupWiFi();
-void handleWiFiClient();
-void startAccessPoint();
-
-// Konfigurations-Handler (Neues Ownership-Modell: Jedes Modul lädt seine JSON-Teile selbst)
-// Wird von SystemConfig.cpp aufgerufen
-bool loadWiFiConfig(JsonVariant json);
-void saveWiFiConfig(JsonObject json);
+/**
+ * @brief Definiert und startet den Access Point.
+ */
+void startAPMode();

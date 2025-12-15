@@ -8,6 +8,12 @@
 extern void IRAM_ATTR handleIgnitionPulse(); 
 extern void IRAM_ATTR handleSpeedPulse();
 
+// Definition der Laufzeit-Zustände (KEIN extern mehr!)
+// WICHTIG: Diese Variablen sollten (wo nötig) als volatile deklariert werden, 
+// da sie in Interrupts und im Loop verwendet werden.
+volatile IgnitionState ignition; 
+volatile SpeedState speedState; 
+
 // =========================================================
 // 1. PIN DEFINITIONEN (DEFINITION)
 // =========================================================
@@ -46,11 +52,7 @@ SpeedConfig speedConfig = {
 };
 IgnitionMap2D ignitionMap; 
 
-// Definition der Laufzeit-Zustände (KEIN extern mehr!)
-// WICHTIG: Diese Variablen sollten (wo nötig) als volatile deklariert werden, 
-// da sie in Interrupts und im Loop verwendet werden.
-extern volatile IgnitionState ignition; 
-extern volatile SpeedState speedState; 
+
 
 
 // =========================================================
